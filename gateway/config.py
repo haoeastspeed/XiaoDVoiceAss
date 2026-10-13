@@ -41,7 +41,7 @@ class GatewayConfig:
     # VAD 断句
     vad_threshold: float = 0.5
     vad_threshold_low: float = 0.3
-    min_silence_ms: int = 400
+    min_silence_ms: int = 300
 
     # 人设（小D）
     system_prompt: str = (

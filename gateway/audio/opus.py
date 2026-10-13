@@ -36,6 +36,10 @@ class DownlinkEncoder:
         self.frame_size = frame_size
         self._frame_bytes = frame_size * 2
 
+    def encode_frame(self, frame: bytes) -> bytes:
+        """编码恰好一帧（frame_size samples）的 s16le PCM。"""
+        return self._enc.encode(frame, self.frame_size)
+
     def encode_pcm(self, pcm: bytes) -> list[bytes]:
         """把任意长度 s16le PCM 按帧编码为 opus 包列表。"""
         packets: list[bytes] = []

@@ -26,6 +26,12 @@ class BaseTTS(ABC):
         """文本 → 24k opus 包列表。"""
         raise NotImplementedError
 
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        """流式产出 opus 包（默认实现等价于一次性合成）。
+        子类可覆盖，让首包更早发出，降低首句延迟。"""
+        for p in await self.synthesize(text):
+            yield p
+
 
 class BaseVAD(ABC):
     @abstractmethod

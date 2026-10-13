@@ -237,11 +237,7 @@ class VoiceSession:
                     self.state = "speaking"
                 sentid = protocol.new_sentence_id()
                 await self._send(protocol.sentence_start(sent, sid, sentid))
-                try:
-                    packets = await self.tts.synthesize(sent)
-                except Exception:
-                    packets = []
-                for p in packets:
+                async for p in self.tts.stream(sent):
                     if not await self._send(p):
                         break
                 await self._send(protocol.sentence_end(sid, sentid))
@@ -251,7 +247,7 @@ class VoiceSession:
                 hint = "哎呀，我刚刚没反应过来，你再说一遍呗。"
                 sid2 = protocol.new_sentence_id()
                 await self._send(protocol.sentence_start(hint, sid, sid2))
-                for p in await self.tts.synthesize(hint):
+                async for p in self.tts.stream(hint):
                     await self._send(p)
                 await self._send(protocol.sentence_end(sid, sid2))
                 full = hint

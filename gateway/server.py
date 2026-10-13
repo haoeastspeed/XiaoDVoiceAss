@@ -84,11 +84,24 @@ class XiaoDGateway:
         )
         await session.run()
 
+    async def _warmup(self):
+        """后台初始化 providers 并让 Ollama 预加载模型，缩短首句 TTFT。"""
+        try:
+            await self._init_providers()
+            async for _ in self._llm.chat(
+                [{"role": "user", "content": "你好"}]
+            ):
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
     async def start(self):
         cfg = self.config
         self._server = await websockets.serve(
             self.handler, cfg.host, cfg.port, max_size=None
         )
+        # 后台预热（不阻塞服务器启动）
+        asyncio.create_task(self._warmup())
         ip = get_lan_ip()
         print(f"小D网关已启动：")
         print(f"  本机   ws://127.0.0.1:{cfg.port}{cfg.ws_path}")
