@@ -1,0 +1,24 @@
+# 依赖与虚拟环境
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# 开源参考服务端（M1 验证用，不进版本库）
+reference/
+
+# 模型/数据
+*.onnx
+*.gguf
+*.bin
+data/
+
+# 固件编译产物
+firmware/xiaozhi-esp32/
+sdkconfig*
+build/
+managed_components/
+
+# 临时
+*.log
+.tmp/
