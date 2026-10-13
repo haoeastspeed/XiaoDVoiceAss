@@ -54,3 +54,21 @@
 - TTS=EdgeTTS（`zh-CN-XiaoxiaoNeural`）
 - Memory=mem_local_short（总结走本地 Ollama）
 - 结果：文本链路 169 帧 opus、音频链路 116 帧 opus，均通过。
+
+## 7. Windows 音频设备去重 / 采样率 / 蓝牙（M3 真机实测，确定性结论）
+
+- **同一物理设备在 4 种 hostapi 下重复枚举**：MME / DirectSound / WASAPI / WDM-KS，
+  不做去重时扬声器下拉会出现 5 项（扬声器 Realtek、Speakers 1/2、蓝牙 HFP、耳机()）。
+- **采样率硬卡点**：
+  - WASAPI / WDM-KS **不做任意采样率转换**：48k（ch1/ch2）能打开，
+    **固定 24k/16k mono 报 `Invalid sample rate`**；WDM-KS 还报 `Blocking API not supported`（必须 callback）。
+  - MME / DirectSound **支持自动重采样**：固定 16k/24k mono、固定 blocksize（960/1440）均可打开。
+  - 结论：**固定 16k/24k 必须走 DirectSound/MME**；归并优先级 DirectSound=4 > MME=3 > WASAPI=1 > WDM-KS=0，只留 prio≥3。
+- **蓝牙耳机（vivo TWS 5）**：
+  - HFP（hands-free，`bthhfenum.sys`）= 16k 窄带 + 强降噪，"喂喂喂"被识别成 "BI REALLY"；
+    干净设备名从 HFP 驱动路径正则提取。
+  - A2DP（`耳机()`，WDM-KS 2ch/48k）音质好但**不能固定 16k**。
+  - **最佳组合：麦克风用内置 Realtek 阵列，蓝牙只用来听（保持 A2DP）**。
+  - 蓝牙层"已连接"但 AudioEndpoint 状态 Unknown（A2DP 常被手机占用）：
+    WDM-KS 打开报 `GLE=0x48F (ERROR_DEVICE_NOT_CONNECTED)`，软件给 `bt_hint` 提示。
+- 前端 HFP↔A2DP 联动约束：麦克风选 HFP→扬声器跟切 HFP；扬声器选 A2DP→麦克风若为 HFP 强制回本地。
