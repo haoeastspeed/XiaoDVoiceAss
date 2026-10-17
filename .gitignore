@@ -16,9 +16,31 @@ data/
 # 固件编译产物
 firmware/xiaozhi-esp32/
 sdkconfig*
-build/
+/build/
 managed_components/
 
 # 临时
 *.log
 .tmp/
+
+# 迁移备份（迁移 managed_components 定制前的快照）
+.backup/
+
+# 打包产物（onedir 输出与 PyInstaller 中间目录）
+dist/
+dist_*/
+build_pyi/
+app/build/work*/
+
+# 固件镜像产物（bin 已由上面 *.bin 覆盖，目录里还有脚本与备份）
+firmware_dist/
+firmware_dist_backup_*/
+
+# 根目录固件构建日志
+logs_*.txt
+
+# 运行时生成的网关配置（含本机模型路径等，非源码）
+app/gateway.json
+
+# WorkBuddy 工作区数据
+.workbuddy/
