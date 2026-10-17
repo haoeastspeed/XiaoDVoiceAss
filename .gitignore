@@ -45,3 +45,4 @@ app/gateway.json
 # WorkBuddy 工作区数据
 .workbuddy/
 config.json
+outputs/
