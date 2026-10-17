@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>形象预览（无头截图用）</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a1120;overflow:hidden}
+  /* 无头截图用：固定左上角（10,10），窗口大小不影响取景 */
+  .avatar-wrap{position:absolute;left:10px;top:10px;width:420px;height:420px}
+  .avatar{width:420px;height:420px;position:relative;overflow:hidden;
+    border-radius:50%;background:radial-gradient(circle at 50% 42%,#1a2745 0%,#0d1526 72%)}
+  .av-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .avatar-wrap>svg{display:none}   /* 覆盖层（声波/思考点）预览页不需要 */
+</style>
+</head>
+<body>
+<div class="avatar-wrap" id="avatarWrap">
+  <div class="avatar" id="avatar"></div>
+</div>
+<script src="../app/ui/avatar.js"></script>
+<script>
+  window.addEventListener("DOMContentLoaded", function () {
+    var p = new URLSearchParams(location.search);
+    var v = p.get("v") || "";
+    var st = p.get("s") || "idle";
+    var lv = parseFloat(p.get("l") || "0");
+    var n = parseInt(p.get("n") || "40", 10);
+    if (v) window.Avatar.setVoice(v);
+    var b = p.get("b");
+    var force = (b !== null) ? { blink: parseFloat(b) } : null;
+    window.Avatar.pose(st, lv, n, force);
+    // 摆完后 freeze 停掉 rAF 循环，否则自然眨眼动画会覆盖钉住的帧
+    var cnt = 0;
+    var iv = setInterval(function () {
+      window.Avatar.pose(st, lv, 1, force);
+      if (++cnt > 60) {
+        clearInterval(iv);
+        if (window.Avatar.freeze) window.Avatar.freeze();
+      }
+    }, 60);
+    // 无头诊断：把内部状态写到 DOM（--dump-dom 可读）
+    setInterval(function () {
+      var d = window.Avatar.debug();
+      var imgs = document.querySelectorAll(".av-canvas");
+      document.body.setAttribute("data-debug",
+        JSON.stringify({ d: d, n: imgs.length }));
+    }, 250);
+  });
+</script>
+</body>
+</html>
