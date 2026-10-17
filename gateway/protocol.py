@@ -10,19 +10,36 @@ def _dump(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
-def hello(session_id: str, audio_params: dict) -> str:
-    """服务端握手响应。"""
+def hello(session_id: str, audio_params: dict, version: int = 1) -> str:
+    """服务端握手响应。version 为协商后的二进制协议版本（1/2/3）。"""
     return _dump({
         "type": "hello",
         "session_id": session_id,
-        "version": 1,
+        "version": int(version),
         "transport": "websocket",
         "audio_params": audio_params,
     })
 
 
-def stt(text: str) -> str:
-    return _dump({"type": "stt", "text": text})
+def stt(text: str, speaker: str | None = None) -> str:
+    msg: dict = {"type": "stt", "text": text}
+    if speaker:
+        # 扩展字段：说话人（声纹识别结果）。官方固件不认识该字段，安全忽略。
+        msg["speaker"] = speaker
+    return _dump(msg)
+
+
+def search_state(state: str, query: str = "", count: int = 0) -> str:
+    """联网搜索进度（客户端据此显示"正在联网搜索…"或检索到的条数）。"""
+    return _dump({"type": "search", "state": state,
+                  "query": query, "count": count})
+
+
+def notice(text: str) -> str:
+    """给用户看的一条提示（TTS 降级/恢复等）：客户端弹一个系统气泡。
+
+    与"内部提示"区分：内部提示（音频端点回退）走 stderr，不发这里。"""
+    return _dump({"type": "notice", "text": text})
 
 
 def tts(state: str, text: str | None = None, session_id: str | None = None) -> str:

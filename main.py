@@ -31,7 +31,15 @@ async def amain(config_path: str | None):
 def main():
     parser = argparse.ArgumentParser(description="小D实时语音网关")
     parser.add_argument("--config", default=None, help="JSON 配置覆盖文件")
+    parser.add_argument("--port", type=int, default=None,
+                        help="监听端口（覆盖配置/环境变量 XIAOD_PORT）")
+    parser.add_argument("--host", default=None,
+                        help="监听地址（覆盖配置/环境变量 XIAOD_HOST）")
     args = parser.parse_args()
+    if args.port:
+        os.environ["XIAOD_PORT"] = str(args.port)
+    if args.host:
+        os.environ["XIAOD_HOST"] = args.host
     try:
         asyncio.run(amain(args.config))
     except KeyboardInterrupt:

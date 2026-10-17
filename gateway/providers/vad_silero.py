@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections import deque
 from typing import Tuple
@@ -17,11 +18,19 @@ class SileroVAD(BaseVAD):
     def __init__(self, model_dir: str, threshold: float = 0.5,
                  threshold_low: float = 0.3, min_silence_ms: int = 400,
                  sample_rate: int = 16000):
-        path = os.path.join(
-            model_dir, "src", "silero_vad", "data", "silero_vad.onnx"
-        )
+        meipass = getattr(sys, "_MEIPASS", "")
+        candidates = [
+            os.environ.get("XIAOD_SILERO_ONNX", ""),
+            os.path.join(model_dir, "src", "silero_vad", "data",
+                         "silero_vad.onnx"),
+            os.path.join(model_dir, "silero_vad.onnx"),
+            os.path.join(meipass, "silero_vad.onnx") if meipass else "",
+        ]
+        path = next((c for c in candidates
+                     if c and os.path.isfile(c)), candidates[1])
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"Silero VAD 缺失: {path}")
+            raise FileNotFoundError(
+                f"Silero VAD 缺失: {path}（可设 XIAOD_SILERO_ONNX 指定路径）")
         opts = onnxruntime.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1

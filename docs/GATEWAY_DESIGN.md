@@ -82,3 +82,21 @@ main.py              # 独立入口
 - 复用 M1 文本/音频测试：握手、文本、音频、打断均通过。
 - 独立 `main.py` 可启动监听；多连接互不干扰。
 - 首句延迟、打断响应在本机可接受（实测记录）。
+
+## 9. 设备接入（ESP32 小智）与自检
+
+- **监听地址**：`host` 必须是 `0.0.0.0` 设备才连得上。写 `127.0.0.1` 时本机
+  聊天一切正常，但设备侧表现为"连接被拒绝"——这是最容易踩的一个坑。
+  应用写入的 `gateway.json` 默认 `0.0.0.0`；`gateway_ctl.ensure()` 还会探一次
+  实际监听地址，发现旧实例只绑了回环地址就自动重启为局域网可达。
+- **健康接口**：`GET /healthz` 回 JSON，含 `host`（绑定地址）、`ready`、
+  `models{llm,asr,vad,tts}`、`error`。界面据此显示"离线模型已加载"，
+  并在仅本机可达时给出红色提示。普通 HTTP 探活仍回 400。
+- **离线模型**：网关 `start()` 后台跑 `_warmup()` → `_init_providers()`，
+  在此时就把 SenseVoice ASR + Silero VAD 权重读进内存（不是会话里懒加载），
+  所以第一句话不用等冷加载。
+- **防火墙**：绑 0.0.0.0 后入站 TCP 端口需要放行。`gateway_ctl.ensure_firewall()`
+  会 best-effort 用 netsh 加规则（需管理员，失败只记日志），界面文案提示手动放行。
+- **回归**：`python tests/test_gateway_lan.py`（真起进程）覆盖：仅本机实例复现
+  拒绝 → ensure 自愈为 0.0.0.0 → `/healthz` 就绪 → 局域网地址 + `Device-Id`
+  头握手返回 `hello`。

@@ -26,6 +26,27 @@ class UplinkDecoder:
         return self._dec.decode(packet, self.frame_size)
 
 
+class DownlinkDecoder:
+    """下行 opus（24000Hz/1ch/60ms）→ s16le PCM（AEC 远端参考用）。
+
+    AEC3 的 far 参考必须是真实播放的 PCM：喂 opus 压缩字节会被
+    aec.feed_far 当成 int16 采样解释，与回声完全不相关，自适应滤波
+    无法收敛。解码失败/空包返回 b""，调用方跳过该帧。
+    """
+
+    def __init__(self, sample_rate: int = 24000, frame_size: int = 1440):
+        self._dec = opuslib_next.Decoder(sample_rate, 1)
+        self.frame_size = frame_size
+
+    def decode(self, packet: bytes) -> bytes:
+        if not packet:
+            return b""
+        try:
+            return self._dec.decode(packet, self.frame_size)
+        except Exception:
+            return b""
+
+
 class DownlinkEncoder:
     """s16le PCM（24000Hz/1ch/60ms）→ opus 包。"""
 
