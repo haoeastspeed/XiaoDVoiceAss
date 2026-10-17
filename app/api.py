@@ -364,6 +364,8 @@ class Api:
             # 界面先于后台初始化醒来：这时还没轮到自动拉起，别报"未运行"
             kind = "准备中"
             action = "starting"
+        elif action == "starting":
+            kind = "启动中"
         else:
             kind = "未运行"
         want_lan = str(self.cfg.get("gateway_host") or "0.0.0.0") \
@@ -395,12 +397,17 @@ class Api:
         if self._gw_busy:
             return {"ok": True, "already": True, "msg": "正在启动中"}
         self._gw_prepare_started = True
-        st = self._gw_status()
-        if st["up"] and st.get("lan_ok"):
-            return {"ok": True, "already": True, "msg": "网关已在运行"}
+        # 先置"启动中"再探测：_gw_status 里的端口探测最长要 1.2s，若先探测
+        # 后置位，界面轮询会落进这个窗口，看到一瞬间的"未运行"（实测就是
+        # 启动时 未运行→启动中 闪跳的第二个来源）。
         self._gw_busy = True
         self._gw_action = "starting"
         self._gw_msg = "正在启动语音网关…"
+        st = self._gw_status()
+        if st["up"] and st.get("lan_ok"):
+            self._gw_busy = False
+            self._gw_action = ""
+            return {"ok": True, "already": True, "msg": "网关已在运行"}
 
         def _work():
             try:

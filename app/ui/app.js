@@ -341,6 +341,10 @@
     running = !!r.running;
     setButtons();
     if (running) { setStatus("live", "正在聆听，请说话"); setAvatar("listening"); }
+    else if (r.gateway && r.gateway.action) {
+      // 网关还在准备/启动中：保持"正在准备"，别闪一下"未开始聊天"
+      setStatus("busy", "正在准备…"); setAvatar("starting");
+    }
     else { setStatus("", "未开始聊天"); setAvatar("idle"); }
     if (!started) { started = true; poll(); }
   }

@@ -53,6 +53,27 @@ def t_status() -> None:
     st3 = api._gw_status()
     ok("关闭自动启动时如实显示未运行", st3["kind"] == "未运行",
        f"{st3['kind']}")
+    # 竞态回归：gateway_prepare 内部先做端口探测（最长 1.2s）后才置
+    # "启动中"的话，轮询会落进窗口看到一瞬间的"未运行"。
+    # ensure 慢 2s，0.3s 时状态必须是 starting，不允许出现 未运行。
+    api2 = Api()
+    api2.cfg["auto_start_gateway"] = True
+    api2.cfg["gateway_port"] = 59997
+    from app import gateway_ctl
+    real_ensure = gateway_ctl.ensure
+    gateway_ctl.ensure = lambda cfg, wait_s=45.0: (time.sleep(2.0) or
+                                                   (False, "stub"))
+    try:
+        th = threading.Thread(target=api2.gateway_prepare, daemon=True)
+        th.start()
+        time.sleep(0.3)
+        st4 = api2._gw_status()
+        ok("prepare 探测窗口内仍是启动中（无未运行闪跳）",
+           st4["action"] == "starting" and st4["kind"] != "未运行",
+           f"{st4['kind']}/{st4['action']}")
+        th.join(timeout=5)
+    finally:
+        gateway_ctl.ensure = real_ensure
 
 
 # ------------------------------------------------ 2. Ollama 伴随服务
