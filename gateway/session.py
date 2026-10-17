@@ -56,6 +56,20 @@ def _norm_text(text: str) -> str:
     return _PUNCT.sub("", text or "")
 
 
+# 唤醒词文本（detect 的 text 只是唤醒词本身时，是"激活通知"而非用户话语）。
+# 固件默认"你好小智"；可被 config.wake_words 覆盖。
+_WAKE_WORDS_DEFAULT = ("你好小智", "你好小志", "你好小驰", "小智", "小志",
+                       "小驰", "hi esp", "嘿你好呀", "嗨小智")
+_WAKE_TEXTS_NORM = frozenset(
+    _norm_text(w).lower() for w in _WAKE_WORDS_DEFAULT)
+
+
+def _is_wake_word_text(text: str) -> bool:
+    """detect 文本是否只是唤醒词本身（归一化后精确比对）。"""
+    key = _norm_text(text).lower()
+    return key in _WAKE_TEXTS_NORM
+
+
 def _rms(pcm: bytes) -> float:
     """一帧 s16le 的均方根（诊断日志用：判断麦克风有没有真在收音）。"""
     import numpy as np
@@ -122,6 +136,7 @@ class VoiceSession:
         self._trail_ms = 0.0      # 句尾连续静音时长（ms）：服务端自己的断句依据
         self._barge_until = 0.0   # 插话保护窗：期内 listen start 不清已捕获的开口语音
         self._last_abort_ts = 0.0  # 最近一次 abort 的时刻（区分真打断与兜底重发）
+        self._last_spoken_ts = 0.0  # 最近一句 TTS 播完的时刻（自激活唤醒判定用）
         self._up_frames = 0       # 上行帧计数（诊断日志）
         self._listen_dup = 0      # 被忽略的重复 listen start 条数（诊断日志）
         # 语音段起止（字节偏移，s16le）：按停顿时长给识别结果补标点用
@@ -830,9 +845,34 @@ class VoiceSession:
                 await self._finish_utterance()
         elif state == "detect":
             text = (msg.get("text") or "").strip()
-            if text:
-                self._collecting = False
-                await self._start_response(text)
+            if not text:
+                return
+            # 自激活防线：设备端把扬声器播放声误判成唤醒/口令时，会把自己
+            # 刚说的话作为 detect 文本推回来（"自己接自己的话"的根源）。
+            # 真打断一定先有 abort（用户按键/真唤醒走 AbortSpeaking）；而
+            # 播报中 / tts_stop 尾音冷却窗内、又没有 abort 的 detect，几乎
+            # 必然是设备听见了自己 —— 丢弃，不开新一轮对话。
+            recent_abort = time.monotonic() - self._last_abort_ts < 2.0
+            if (self._response_active() or self._gate_on()) and not recent_abort:
+                print(f"[echo-guard] 丢弃播放期/冷却期设备端 detect: {text}",
+                      flush=True)
+                return
+            if self._is_self_echo(text):
+                # detect 文本与刚播报的句子高度重合 → 同样是自己听自己。
+                print(f"[echo-guard] 丢弃自播放回声 detect: {text}", flush=True)
+                return
+            if self._is_self_activated_wake(text, recent_abort):
+                # detect 文本只是唤醒词本身：协议语义上这是"激活通知"而非
+                # 用户话语（官方服务端收到 detect 不开对话）。设备端把
+                # 扬声器尾音/噪声误判成唤醒时，会纯文字推回唤醒词——
+                # 刚说过话的窗口内尤其可疑，放行它就是"自己接自己的话"
+                # 的文字回环。真用户唤醒若在窗口内说了唤醒词被误丢，
+                # 继续说话仍会走 ASR 通道，不丢内容。
+                print(f"[echo-guard] 丢弃自激活唤醒词 detect: {text}",
+                      flush=True)
+                return
+            self._collecting = False
+            await self._start_response(text)
 
     # ---------- 上行音频 ----------
 
@@ -1058,6 +1098,20 @@ class VoiceSession:
         key = _norm_text(sentence)
         if len(key) >= 4:
             self._spoken.append((time.monotonic(), key))
+        self._last_spoken_ts = time.monotonic()
+
+    def _is_self_activated_wake(self, text: str, recent_abort: bool) -> bool:
+        """唤醒词-only 的 detect 是否来自设备端自激活。
+
+        真打断（abort）优先放行；其余情况下，刚播报完的自唤醒窗口内
+        （默认 6s，覆盖唤醒引擎的滞后触发——旧的 700ms 冷却窗盖不住）
+        收到的"只有唤醒词"的 detect 几乎必然是设备听见了尾音。"""
+        if recent_abort:
+            return False
+        if not _is_wake_word_text(text):
+            return False
+        window = float(getattr(self.config, "selfwake_window_s", 6.0))
+        return (time.monotonic() - self._last_spoken_ts) < window
 
     def _is_self_echo(self, text: str) -> bool:
         """判断识别结果是否来自本机扬声器的自播放回声。

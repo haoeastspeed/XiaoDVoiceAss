@@ -164,6 +164,9 @@ class GatewayConfig:
     # tts_stop 之后还要静默多久（毫秒）。设备端播放缓冲 + 房间混响的尾巴
     # 通常比"服务端认为播完了"晚 200~600ms。
     echo_gate_cooldown_ms: int = 700
+    # 唤醒词-only 的 detect 自激活判定窗口：刚播报完这么多秒内收到
+    # "只有唤醒词"的 detect 视为设备自激活丢弃（见 session._is_self_activated_wake）
+    selfwake_window_s: float = 6.0
     # 闸门期是否允许用 AEC 处理后的信号检测语音打断（仅 echo_cancel 生效时）
     echo_gate_barge: bool = True
 
