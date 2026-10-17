@@ -76,6 +76,10 @@ class Api:
         self._gw_busy = False
         # 当前正在做的网关动作："" / starting / stopping / restarting
         self._gw_action = ""
+        # gateway_prepare() 是否已被调用。界面的 bootstrap 比后台初始化跑得
+        # 早，这窗口期若直接报"未运行"，用户会看到 未运行→启动中 的闪跳；
+        # 只要自动拉起还排在队里，就统一显示"启动中"。
+        self._gw_prepare_started = False
         self._models_cache = None
         self._models_at = 0.0
         self._models_fetching = False
@@ -157,7 +161,7 @@ class Api:
                 or "http://localhost:11434").rstrip("/")
         try:
             import httpx
-            r = httpx.get(f"{base}/api/tags", timeout=2.5)
+            r = httpx.get(f"{base}/api/tags", timeout=2.5, trust_env=False)
             for m in (r.json().get("models") or []):
                 name = m.get("name") or ""
                 if not name or any(h in name.lower() for h in _EXCLUDE_HINT):
@@ -348,19 +352,25 @@ class Api:
                 self._hw_health = gateway_ctl.health(port)
                 self._hw_at = now
             addr, h = self._hw_addr, self._hw_health
+        action = self._gw_action
         if up and live:
             kind = "通话中 · 服务正常"
         elif up and gateway_ctl.external():
             kind = "独立服务（外部实例）"
         elif up:
             kind = "已启动（本应用拉起）"
+        elif not self._gw_prepare_started and \
+                self.cfg.get("auto_start_gateway", True):
+            # 界面先于后台初始化醒来：这时还没轮到自动拉起，别报"未运行"
+            kind = "准备中"
+            action = "starting"
         else:
             kind = "未运行"
         want_lan = str(self.cfg.get("gateway_host") or "0.0.0.0") \
             not in ("127.0.0.1", "localhost", "::1")
         return {"up": up, "port": port, "pid": pid, "kind": kind,
                 "busy": self._gw_busy, "msg": self._gw_msg,
-                "action": self._gw_action,
+                "action": action,
                 "listen_addr": addr,
                 # 设备可达 = 网关在跑 且 监听的不是回环地址
                 "lan_ok": bool(up and addr and not addr.startswith("127.")),
@@ -384,6 +394,7 @@ class Api:
         """
         if self._gw_busy:
             return {"ok": True, "already": True, "msg": "正在启动中"}
+        self._gw_prepare_started = True
         st = self._gw_status()
         if st["up"] and st.get("lan_ok"):
             return {"ok": True, "already": True, "msg": "网关已在运行"}
@@ -407,6 +418,7 @@ class Api:
                         break
                     time.sleep(0.5)
                 self._gw_msg = self._models_msg(h, True) or "网关已就绪"
+                self._refresh_models_async()  # Ollama 可能刚被带起，重拉模型列表
                 log(f"离线模型状态：{h.get('models') if h else None} "
                     f"error={(h or {}).get('error')}")
                 if h is None:
@@ -740,6 +752,20 @@ class Api:
                     else "在线神经"
         except Exception:  # noqa: BLE001
             pass
+        # 合成引擎跟随音色：选了离线音色就走本地；在线音色保持 auto
+        #（联网在线合成，断网自动换本地）。界面上不再单独提供引擎选择。
+        if engine:
+            want = "local" if engine == "local" else "auto"
+            if str(self.cfg.get("tts_engine") or "auto") != want:
+                self.cfg["tts_engine"] = want
+                acfg.save(self.cfg)
+                log(f"TTS 引擎随音色 -> {want}")
+            cc = self._client
+            if cc is not None:
+                try:
+                    cc.set_tts_engine(want)
+                except Exception:  # noqa: BLE001
+                    pass
         log(f"音色 -> {voice}（{engine} {label}）")
         return {"ok": True, "engine": engine, "label": label}
 
@@ -972,41 +998,94 @@ class Api:
         threading.Thread(target=_work, daemon=True).start()
         return {"ok": True}
 
-    def preview_voice(self) -> dict:
-        """试听当前音色：本地合成本机播放（不经过通话链路）。
+    def _preview_text(self, voice: str) -> str:
+        """试听语句跟音色语言走：英语音色听中文样本判断不了音色。"""
+        try:
+            from gateway.providers import tts_kokoro
+            from gateway.providers.tts_router import LOCAL_PREFIX
+            low = voice.lower()
+            vid = voice[len(LOCAL_PREFIX):] if \
+                voice.startswith(LOCAL_PREFIX) else voice
+            if low.startswith("en-") or tts_kokoro.is_neuro_id(vid) and \
+                    vid[:3] in ("af_", "am_", "bf_", "bm_"):
+                return ("Hello, I am XiaoD, your local voice assistant. "
+                        "How is your day going so far?")
+        except Exception:  # noqa: BLE001
+            pass
+        return "你好，我是小D，很高兴认识你。今天过得怎么样？"
 
-        两个曾经的坑，都修在这里：
+    def _preview_via_gateway(self, voice: str, text: str) -> tuple:
+        """让网关进程合成试听，返回 (pcm16, engine)。
+
+        GUI 进程里跑 sherpa/SAPI 原生栈在打包环境会崩掉整个程序（实测
+        "离线音色试听无声 + 闪退"），而网关进程里同一套合成一直稳定，
+        所以合成一律先走网关 HTTP，失败才回退本进程。"""
+        import io
+        import wave
+        import httpx
+        port = int(self.cfg.get("http_port", 8003) or 8003)
+        r = httpx.post(f"http://127.0.0.1:{port}/tts/preview/",
+                       json={"voice": voice, "text": text},
+                       timeout=60.0, trust_env=False)
+        if r.status_code != 200:
+            try:
+                msg = r.json().get("message") or ""
+            except Exception:  # noqa: BLE001
+                msg = ""
+            raise RuntimeError(msg or f"网关试听端点返回 {r.status_code}")
+        with wave.open(io.BytesIO(r.content), "rb") as w:
+            rate = w.getframerate()
+            pcm = w.readframes(w.getnframes())
+        if rate != 24000 and pcm:
+            import numpy as np
+            x = np.frombuffer(pcm, dtype=np.int16)
+            n = int(round(x.size * 24000 / rate))
+            idx = np.linspace(0.0, x.size - 1.0, n)
+            i0 = np.floor(idx).astype(np.int64)
+            i1 = np.minimum(i0 + 1, x.size - 1)
+            frac = (idx - i0).astype(np.float32)
+            y = (x[i0].astype(np.float32) * (1 - frac)
+                 + x[i1].astype(np.float32) * frac)
+            pcm = np.clip(y, -32768, 32767).astype(np.int16).tobytes()
+        return pcm, (r.headers.get("x-engine") or "")
+
+    def preview_voice(self) -> dict:
+        """试听当前音色：合成（优先网关进程）+ 本机播放（不经过通话链路）。
+
+        几个曾经的坑，都修在这里：
         1. **播放设备必须走回退链**（app.devices.candidates）：界面里选中的
            端点未必打得开 24kHz（WDM-KS 直接失败 / WASAPI 拒绝非原生采样率），
            通话链路有回退所以能出声，试听此前直接拿选中索引开流 → 用户看到的
            就是"试听失败：Invalid device"。
-        2. **合成耗时别让界面干等**：本地神经模型首句要加载几秒，这里在
-           bootstrap 时就后台预热（_warm_neuro），试听本身只剩合成耗时。"""
+        2. **合成不在本进程做**：GUI 进程加载 sherpa/SAPI 原生栈在打包环境
+           会整进程崩溃（无声 + 闪退）；合成放网关进程，GUI 只负责播放。
+        3. 网关没起/端点失败时，仍回退本进程合成，保证功能可用。"""
         # 通话中别抢：它会占用同一条扬声器流，混着放既听不清也可能报错
         if self._running():
             return {"ok": False, "error": "通话中不能试听，请先结束聊天"}
         try:
-            import asyncio
             import numpy as np
             import sounddevice as sd
-            from gateway.providers import tts_kokoro
             from gateway.providers.tts_router import TTSRouter, LOCAL_PREFIX
             self._ensure_devices()
             voice = self.cfg.get("voice") or ""
-            # 试听语句跟音色语言走：英语音色听中文样本判断不了音色
-            low = voice.lower()
-            vid = voice[len(LOCAL_PREFIX):] if voice.startswith(LOCAL_PREFIX) \
-                else voice
-            if low.startswith("en-") or tts_kokoro.is_neuro_id(vid) and \
-                    vid[:3] in ("af_", "am_", "bf_", "bm_"):
-                text = "Hello, I am XiaoD, your local voice assistant. " \
-                       "How is your day going so far?"
-            else:
-                text = "你好，我是小D，很高兴认识你。今天过得怎么样？"
-            router = TTSRouter(voice, 24000, 1440,
-                               engine=self.cfg.get("tts_engine", "auto"))
-            pcm = asyncio.run(router.preview_pcm(
-                text, {"rate": 1.0, "pitch": 1.0, "volume": 1.0}))
+            text = self._preview_text(voice)
+            # ---- 合成：网关优先，失败回退本进程 ----
+            pcm, engine_tag = b"", ""
+            try:
+                pcm, engine_tag = self._preview_via_gateway(voice, text)
+                via = "gateway"
+            except Exception as e:  # noqa: BLE001
+                log(f"试听走网关失败，回退本进程合成：{e}")
+            if not pcm:
+                via = "in-process"
+                import asyncio
+                engine = "local" if voice.startswith(LOCAL_PREFIX) \
+                    else str(self.cfg.get("tts_engine") or "auto")
+                router = TTSRouter(voice, 24000, 1440, engine=engine)
+                pcm = asyncio.run(router.preview_pcm(
+                    text, {"rate": 1.0, "pitch": 1.0, "volume": 1.0}))
+                engine_tag = router.last_engine
             if not pcm:
                 return {"ok": False,
                         "error": "合成没有返回音频（本地神经模型缺失且系统音色不可用）"}
@@ -1047,11 +1126,13 @@ class Api:
                     last_err = last_err or e
             if not used:
                 return {"ok": False, "error": f"播放失败：{last_err}"}
+            engine_final = "local" if engine_tag == "local" else "online"
+            log(f"试听完成：voice={voice} engine={engine_tag} "
+                f"via={via} device={used}")
             return {"ok": True,
-                    "engine": "local" if router.last_engine == "local" else "online",
+                    "engine": engine_final,
                     "device": used,
-                    "voice": router.local_label if router.last_engine == "local"
-                             else voice}
+                    "voice": voice}
         except Exception as e:  # noqa: BLE001
             log(f"试听失败：{e!r}")
             return {"ok": False, "error": str(e)}

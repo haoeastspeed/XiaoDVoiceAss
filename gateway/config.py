@@ -206,6 +206,7 @@ class GatewayConfig:
     # ---- HTTP 端点（OTA / 视觉，P1-C / P2-B）----
     http_port: int = 8003          # OTA / vision 用；0 = 不启 HTTP 服务
     ota_enabled: bool = True       # 是否启用 /xiaozhi/ota/ 端点
+    tts_preview_enabled: bool = True   # /tts/preview/ 试听合成端点（客户端用）
     # 设备鉴权：默认关（局域网信任）。开了之后 WS 握手与 OTA 需带 Bearer token。
     auth_enabled: bool = False
     auth_key: str = ""             # HMAC 签名密钥（空则用内置默认）

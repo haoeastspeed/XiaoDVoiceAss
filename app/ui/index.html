@@ -149,12 +149,11 @@
       <div class="group-title">声音</div>
       <label class="field"><span>音色（在线神经 / 离线本地）</span>
         <select id="voiceSel"></select></label>
-      <label class="field"><span>合成引擎</span><select id="engineSel"></select></label>
       <div class="btn-row">
         <button class="btn small" id="previewBtn">试听当前音色</button>
         <span class="tip" id="previewTip"></span>
       </div>
-      <div class="tip">选「自动」时优先用在线神经音色；一旦联网失败会自动切到系统本地音色，不中断对话。</div>
+      <div class="tip">在线音色联网合成、断网自动换本地；离线音色直接本机合成——引擎跟随音色自动选择，无需单独设置。</div>
     </div>
 
     <div class="group">

@@ -161,6 +161,16 @@ def run_gui() -> int:
             api.bootstrap()          # 预热设备/模型/音色列表
         except Exception as e:       # noqa: BLE001
             log(f"bootstrap 预热失败：{e!r}")
+        try:
+            from app import ollama_ctl
+            if str(api.cfg.get("llm_backend") or "ollama") == "ollama":
+                ok, msg = ollama_ctl.ensure(
+                    str(api.cfg.get("ollama_base_url") or ""), logger=log)
+                log(f"Ollama 伴随服务：{msg}")
+                if ok:
+                    api._refresh_models_async()   # 替换掉"未检测到"的兜底列表
+        except Exception as e:  # noqa: BLE001
+            log(f"Ollama 伴随服务异常：{e!r}")
         # 启动即拉起网关并加载离线模型（默认开）——与"自动开始通话"解耦，
         # ESP32 等设备随时能连上；不阻塞窗口，后台完成。
         if api.cfg.get("auto_start_gateway", True):

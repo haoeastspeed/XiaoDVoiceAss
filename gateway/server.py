@@ -194,7 +194,9 @@ class XiaoDGateway:
         """启动 OTA / 视觉 HTTP 端点（独立线程，失败不影响 WS 网关）。"""
         cfg = self.config
         want = (bool(getattr(cfg, "ota_enabled", True))
-                or bool(getattr(cfg, "vision_enabled", False)))
+                or bool(getattr(cfg, "vision_enabled", False))
+                # 试听合成走网关进程（GUI 进程合成原生栈有崩溃风险）
+                or bool(getattr(cfg, "tts_preview_enabled", True)))
         if not want or int(getattr(cfg, "http_port", 0) or 0) <= 0:
             return
         try:
@@ -206,6 +208,9 @@ class XiaoDGateway:
             if getattr(cfg, "vision_enabled", False):
                 from gateway.http.vision import VisionHandler
                 VisionHandler(cfg).register(app)
+            if getattr(cfg, "tts_preview_enabled", True):
+                from gateway.http.tts import TTSPreviewHandler
+                TTSPreviewHandler(cfg).register(app)
             if app.start():
                 self._http = app
         except Exception as e:  # noqa: BLE001

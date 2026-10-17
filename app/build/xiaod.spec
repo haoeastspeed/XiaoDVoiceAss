@@ -36,7 +36,7 @@ for cand in ("D:/models/snakers4_silero-vad/src/silero_vad/data/silero_vad.onnx"
 # ---------- 隐式导入 ----------
 hiddenimports = [
     "app", "app.main", "app.api", "app.app_config", "app.devices",
-    "app.gateway_ctl", "app.voice_client",
+    "app.gateway_ctl", "app.voice_client", "app.ollama_ctl",
     "gateway", "gateway.config", "gateway.server", "gateway.session",
     "gateway.protocol", "gateway.audio.opus", "gateway.audio.aec",
     # 网关侧回声消除用的 WebRTC APM（延迟 import，静态分析看不到）
@@ -53,7 +53,7 @@ hiddenimports = [
     "gateway.tools.loop",
     "gateway.binframe", "gateway.binframe.codec",
     "gateway.http", "gateway.http.httpd", "gateway.http.ota",
-    "gateway.http.vision", "gateway.auth",
+    "gateway.http.vision", "gateway.http.tts", "gateway.auth",
     "gateway.transport", "gateway.transport.base", "gateway.transport.udp",
     "gateway.transport.mqtt",
     # ---- P2 能力（声纹 / 视觉 / Realtime / 唤醒词）----

@@ -275,7 +275,6 @@
     fillSel($("spkSel"), dev.outputs || [], r.cfg.speaker_index, "spk");
     fillSel($("modelSel"), r.models || [], r.cfg.model);
     fillSel($("voiceSel"), r.voices || [], r.cfg.voice);
-    fillSel($("engineSel"), r.tts_engines || [], r.cfg.tts_engine);
     fillSel($("modeSel"), r.interrupt_modes || [], r.cfg.interrupt_mode);
     fillSel($("presetSel"), (r.presets || []).map((p) => ({ id: p.name, name: p.name })),
       r.cfg.prompt_name);
@@ -453,10 +452,6 @@
     if (window.Avatar && window.Avatar.setVoice)
       window.Avatar.setVoice(v);
     showSys("音色已切换（下一句生效）" + (r && r.label ? " · " + r.label : ""));
-  });
-  $("engineSel").addEventListener("change", async () => {
-    await api().set_tts_engine($("engineSel").value);
-    showSys("合成引擎已切换");
   });
   $("previewBtn").addEventListener("click", async () => {
     const el = $("previewTip");
