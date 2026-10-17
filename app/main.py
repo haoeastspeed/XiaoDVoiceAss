@@ -45,6 +45,45 @@ os.environ.setdefault("XIAOD_DATA_DIR", acfg.data_dir())
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 
+def _install_crash_blackbox() -> None:
+    """崩溃黑匣子：闪退不留痕就永远查不出原因（本机 WER 被策略禁用，
+    两次闪退在系统层零记录）。三道钩子都写进 gui_crash.log：
+      1. faulthandler —— 原生层硬崩（access violation / abort）时转储
+         所有线程的 Python 栈，这是查"闪退元凶模块"的唯一抓手；
+      2. sys.excepthook —— 主线程未捕获异常（窗口版 stderr 是 None，
+         不接住就无声消失）；
+      3. threading.excepthook —— 工作线程未捕获异常（同样无声）。"""
+    try:
+        import faulthandler
+        os.makedirs(acfg.data_dir(), exist_ok=True)
+        path = os.path.join(acfg.data_dir(), "gui_crash.log")
+        fh = open(path, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(fh)
+        import threading
+        import traceback
+
+        def _dump(kind: str, tp, val, tb):
+            try:
+                fh.write(f"\n=== {kind} ===\n")
+                fh.write("".join(traceback.format_exception(tp, val, tb)))
+                log(f"{kind}: {tp.__name__}: {val}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _sys_hook(tp, val, tb):
+            _dump("主线程未捕获异常", tp, val, tb)
+
+        def _thread_hook(args):
+            _dump(f"线程 {getattr(args.thread, 'name', '?')} 未捕获异常",
+                  args.exc_type, args.exc_value, args.exc_traceback)
+
+        sys.excepthook = _sys_hook
+        threading.excepthook = _thread_hook
+        log(f"崩溃黑匣子已启用 → {path}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------- 角色二：网关 ----------
 
 def run_gateway(argv: list[str]) -> int:
@@ -120,6 +159,7 @@ def run_gui() -> int:
     import webview
     from app.api import Api
 
+    _install_crash_blackbox()
     log("=== 小D语音陪聊助手启动 ===")
     api = Api()
     win = webview.create_window(
@@ -201,6 +241,7 @@ def run_gui() -> int:
         log(f"webview.start 异常: {e!r}")
         raise
     # GUI 已退出：再温柔地等网关收尾
+    log("GUI 已退出（窗口正常关闭），等待网关收尾…")
     try:
         gateway_ctl.wait_exit(3.0)
     except Exception:  # noqa: BLE001
