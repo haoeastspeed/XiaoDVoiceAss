@@ -228,10 +228,21 @@ class VoiceSession:
             self._tasks.add(asyncio.create_task(self._init_endpoints()))
         try:
             async for raw in self.ws:
-                if isinstance(raw, (bytes, bytearray)):
-                    await self._on_binary(bytes(raw))
-                else:
-                    await self._on_text(raw)
+                # 单条消息处理失败不能杀掉整场会话：旧实现只捕获
+                # ConnectionClosed，任何未预期异常都会让会话无声断开、
+                # 日志里什么都没有 —— 这正是"用着用着就没反应"的共同根因。
+                try:
+                    if isinstance(raw, (bytes, bytearray)):
+                        await self._on_binary(bytes(raw))
+                    else:
+                        await self._on_text(raw)
+                except websockets.exceptions.ConnectionClosed:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    import traceback
+                    print(f"[gateway] 处理消息异常（跳过该条，会话继续）："
+                          f"{type(exc).__name__}: {exc}", flush=True)
+                    traceback.print_exc()
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -443,6 +454,10 @@ class VoiceSession:
             msg = json.loads(raw)
         except Exception:
             return
+        # 客户端可能发来非对象 JSON（如 123 / [] / "x"）：不校验的话
+        # msg.get 直接抛 AttributeError，整场会话静默死亡。
+        if not isinstance(msg, dict):
+            return
         t = msg.get("type")
         self._touch()          # 任何控制消息都算一次交互（唤醒 / 重置空闲计时）
         if t == "hello":
@@ -573,6 +588,9 @@ class VoiceSession:
             print("[session] 收到 iot 消息（官方已废弃，忽略）", flush=True)
         elif t == "mcp":
             await self._on_mcp(msg)
+        else:
+            # 未知消息类型：静默丢弃会让"设备发了但网关没反应"无迹可查
+            print(f"[session] 未知消息类型，已忽略: type={t!r}", flush=True)
 
     # ---------- MCP ----------
 
@@ -882,7 +900,13 @@ class VoiceSession:
             return
         # v2/v3：二进制帧里可能封装的是 JSON（type=1）——拆出来当文本消息处理。
         if self._codec is not None and self._codec.version > 1:
-            kind, payload, _ts = self._codec.decode(data)
+            # 畸形帧（长度不足 / 版本头错）不能抛：单包异常会杀掉整场会话。
+            try:
+                kind, payload, _ts = self._codec.decode(data)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[gateway] 上行二进制帧解析失败（丢弃）：{exc!r}",
+                      flush=True)
+                return
             if kind == "json":
                 with contextlib.suppress(Exception):
                     await self._on_text(payload.decode("utf-8", "replace"))
@@ -890,7 +914,13 @@ class VoiceSession:
             opus = payload
         else:
             opus = data
-        pcm = self._decoder.decode(opus)
+        try:
+            pcm = self._decoder.decode(opus)
+        except Exception as exc:  # noqa: BLE001
+            # 单个损坏的 opus 包不该终结会话（旧实现会让异常冒到主循环）
+            print(f"[gateway] 上行 opus 解码失败（丢弃该帧）：{exc!r}",
+                  flush=True)
+            return
         if not pcm:
             return
 
@@ -1286,6 +1316,16 @@ class VoiceSession:
             return
         self._sleeping = True
         self.state = "idle"
+        # 真正停掉上行累积：休眠时音频字节仍被 WS 接收（不丢连接、不换会话），
+        # 但不再进 VAD/ASR 累积，省 CPU 与内存；设备/客户端下次 listen
+        # （固件唤醒词触发，属控制消息）会经 _touch() 复位并恢复处理。
+        # realtime 是持续流式模式，休眠没有意义，跳过。
+        if self._realtime is None:
+            self._collecting = False
+            self._utterance = bytearray()
+            self._spans.clear()
+            self._in_speech = False
+            self._speech_ms = 0.0
         print(f"[session] 空闲 {limit:.0f}s，进入休眠（会话 "
               f"{self.session_id[:8]}）", flush=True)
 
@@ -1395,10 +1435,13 @@ class VoiceSession:
                 yield sent
 
     def _register_capability_tools(self):
-        """把家居 / 联网搜索包成工具（仅在 tools_first 开启时注册）。
+        """把家居 / 联网搜索包成工具（**始终注册**，与 tools_first 解耦）。
 
-        内部逻辑完全复用现有实现，不新增一份——prompt 路径依旧保留作兜底。"""
-        if not self._tools_first() or getattr(self, "_cap_tools_done", False):
+        内部逻辑完全复用现有实现，不新增一份——prompt 路径依旧保留作兜底。
+        早期实现只在 tools_first 开启时注册，导致用户在界面打开工具开关后
+        注册表里根本没有这些能力工具（要重启网关才补得上）。默认
+        tools_first=False 时工具循环本就不启用，所以始终注册不改变既有行为。"""
+        if getattr(self, "_cap_tools_done", False):
             return
         self._cap_tools_done = True
 

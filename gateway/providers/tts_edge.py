@@ -20,20 +20,42 @@ import asyncio
 import re
 from typing import List
 
-import edge_tts
-import edge_tts.communicate
-import miniaudio
+# 依赖不可用时**不能让整个模块 import 失败**：session.py / tts_router 都会
+# 顶层 from 这里取 official_voices/known_voice，一旦 raise，网关起不来，
+# 连离线功能一起没了。所以降级成"在线不可用"，交给 router 走本地合成。
+try:
+    import edge_tts
+    import edge_tts.communicate
+    import miniaudio
+    _AVAILABLE = True
+    _IMPORT_ERROR = ""
+except Exception as _imp_err:  # noqa: BLE001
+    edge_tts = None            # type: ignore[assignment]
+    miniaudio = None           # type: ignore[assignment]
+    _AVAILABLE = False
+    _IMPORT_ERROR = f"{type(_imp_err).__name__}: {_imp_err}"
 
 from gateway.audio.opus import DownlinkEncoder
 from gateway.providers.base import BaseTTS
 
 # edge-tts 7.2.8 旧端点 403，切换到新端点（M1 已验证）
-_NEW_WSS_URL = (
-    "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
-    f"?Ocp-Apim-Subscription-Key={edge_tts.constants.TRUSTED_CLIENT_TOKEN}"
-)
-edge_tts.constants.WSS_URL = _NEW_WSS_URL
-edge_tts.communicate.WSS_URL = _NEW_WSS_URL
+_NEW_WSS_URL = ""
+if _AVAILABLE:
+    _NEW_WSS_URL = (
+        "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+        f"?Ocp-Apim-Subscription-Key={edge_tts.constants.TRUSTED_CLIENT_TOKEN}"
+    )
+    edge_tts.constants.WSS_URL = _NEW_WSS_URL
+    edge_tts.communicate.WSS_URL = _NEW_WSS_URL
+
+
+def available() -> bool:
+    """在线 TTS 依赖是否齐备；router 据此决定是否启用在线引擎。"""
+    return _AVAILABLE
+
+
+def import_error() -> str:
+    return _IMPORT_ERROR
 
 
 _official: dict = {}          # {voice_id: 显示名}，来自官方 list_voices()
@@ -156,6 +178,8 @@ class EdgeTTS(BaseTTS):
         return out
 
     def _communicate(self, text: str, style: dict | None):
+        if not _AVAILABLE:
+            raise RuntimeError(f"在线合成不可用（{_IMPORT_ERROR}）")
         return edge_tts.Communicate(text, voice=self.voice,
                                     **self._ssml_kwargs(style))
 

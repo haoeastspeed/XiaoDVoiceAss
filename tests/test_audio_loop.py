@@ -68,7 +68,7 @@ async def main() -> int:
 
     try:
         ws = await websockets.connect(
-            WS_URL, additional_headers={"device-id": DEVICE_ID}, max_size=None
+            WS_URL, extra_headers={"device-id": DEVICE_ID}, max_size=None
         )
     except Exception as e:
         print(f"连接失败: {e}")

@@ -19,7 +19,7 @@ import websockets  # noqa: E402
 
 async def ask(text: str, enabled: bool = True, wait: float = 90.0):
     ws = await websockets.connect(
-        WS_URL, additional_headers={"device-id": "search-test"},
+        WS_URL, extra_headers={"device-id": "search-test"},
         max_size=None, ping_interval=None)
     ev = {"search": None, "count": None, "reply": [], "stt": ""}
 

@@ -23,7 +23,7 @@ async def main() -> int:
     try:
         ws = await websockets.connect(
             WS_URL,
-            additional_headers={"device-id": DEVICE_ID},
+            extra_headers={"device-id": DEVICE_ID},
             max_size=None,
         )
     except Exception as e:

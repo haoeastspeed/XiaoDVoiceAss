@@ -46,7 +46,7 @@ async def main():
         "audio_params": {"format": "opus", "sample_rate": SR,
                          "channels": 1, "frame_duration": 60},
     }
-    async with connect(URL, additional_headers={"device-id": "smoke-001"}) as ws:
+    async with connect(URL, extra_headers={"device-id": "smoke-001"}) as ws:
         await ws.send(json.dumps(hello))
         await asyncio.sleep(0.4)
         await ws.send(json.dumps({"type": "listen", "state": "start",

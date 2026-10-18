@@ -865,10 +865,19 @@ class Api:
                 self._win.on_top = bool(value)
             except Exception:  # noqa: BLE001
                 pass
+        restarting = False
         if key == "gateway_host" and str(old) != str(value):
-            # 监听地址只在网关启动时生效 → 改了就自动重启网关
-            log(f"监听地址改为 {value}，重启网关生效")
-            threading.Thread(target=self.gateway_restart, daemon=True).start()
+            # 监听地址只在网关启动时生效 → 改了要重启。但**只在网关本来就跑着**
+            # 时才重启：不能因为改个设置就把"没打算开网关"的机器启动起来，
+            # 更不能在通话中无声无息把网关重启掉（会挂断正在进行的对话）。
+            port = int(self.cfg.get("gateway_port", 8000) or 8000)
+            if gateway_ctl.port_up(port):
+                log(f"监听地址改为 {value}，重启网关生效")
+                threading.Thread(target=self.gateway_restart,
+                                 daemon=True).start()
+                restarting = True
+            else:
+                log(f"监听地址改为 {value}（网关未运行，下次启动生效）")
         elif key in ("echo_gate", "echo_cancel", "echo_gate_cooldown_ms",
                      "echo_aec_delay_ms",
                      # 语言模型后端 / 识别语言 / 记忆模式 / 休眠 / 家居
@@ -891,11 +900,12 @@ class Api:
             # 回声门 / AEC 参数同样是网关启动时读入 → 改了要重启生效。
             # 但**只在网关本来就跑着**时才重启：不能因为用户改了个设置
             # 就把"没打算开网关"的机器给启动起来。
-            port = int(self.cfg.get("gateway_port", 8000))
+            port = int(self.cfg.get("gateway_port", 8000) or 8000)
             if gateway_ctl.port_up(port):
                 log(f"{key} 改为 {value}，重启网关生效")
                 threading.Thread(target=self.gateway_restart,
                                  daemon=True).start()
+                restarting = True
             else:
                 log(f"{key} 改为 {value}（网关未运行，下次启动生效）")
         if key == "play_volume":
@@ -905,7 +915,9 @@ class Api:
                     c.set_volume(value)
                 except Exception:  # noqa: BLE001
                     pass
-        return {"ok": True}
+        # restarting 供界面提示"正在重启网关…"：这类配置要几十秒才生效，
+        # 不提示的话用户只会觉得"点了没反应"。
+        return {"ok": True, "restarting": restarting}
 
     def clear_history(self) -> dict:
         with self._lock:
@@ -919,7 +931,16 @@ class Api:
         return {"ok": True}
 
     def rescan_devices(self) -> dict:
-        self._devices = devices.query()
+        """重新扫描麦克风/扬声器：失败要把原因交还界面。
+
+        旧实现 `devices.query()` 没有 try，扫描失败时异常变成未捕获的 Promise
+        rejection，前端拿到 undefined 后「重新扫描」点了完全没反应。
+        """
+        try:
+            self._devices = devices.query()
+        except Exception as e:  # noqa: BLE001
+            log(f"重新扫描设备失败：{e!r}")
+            return {"ok": False, "error": f"扫描设备失败：{e}"}
         return {"ok": True, "devices": self._devices}
 
     # ---------- 记录 ----------
@@ -979,7 +1000,9 @@ class Api:
         if isinstance(path, (list, tuple)):
             path = path[0] if path else None
         if not path:
-            path = self._save_transcript()
+            # 用户点了「取消」→ 不再静默保存。旧实现这里会偷偷存一份到
+            # transcripts/ 再提示"已导出"，等于取消了也存了文件。
+            return {"ok": False, "error": "已取消导出", "cancelled": True}
         else:
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -1066,36 +1089,38 @@ class Api:
            就是"试听失败：Invalid device"。
         2. **合成不在本进程做**：GUI 进程加载 sherpa/SAPI 原生栈在打包环境
            会整进程崩溃（无声 + 闪退）；合成放网关进程，GUI 只负责播放。
-        3. 网关没起/端点失败时，仍回退本进程合成，保证功能可用。"""
+        3. 网关没起会自动拉起再试听；合成失败只给明确提示，**绝不回退本进程**。"""
         # 通话中别抢：它会占用同一条扬声器流，混着放既听不清也可能报错
         if self._running():
             return {"ok": False, "error": "通话中不能试听，请先结束聊天"}
         try:
             import numpy as np
             import sounddevice as sd
-            from gateway.providers.tts_router import TTSRouter, LOCAL_PREFIX
             self._ensure_devices()
             voice = self.cfg.get("voice") or ""
             text = self._preview_text(voice)
-            # ---- 合成：网关优先，失败回退本进程 ----
-            pcm, engine_tag = b"", ""
+            # ---- 合成：只在网关进程做，绝不回退本进程 ----
+            # 旧实现在网关没起时回退"本进程合成"，而 GUI 进程加载 sherpa/SAPI
+            # 原生栈会整进程崩溃（实测"离线音色试听无声 + 闪退"）。这里宁可
+            # 自动把网关带起来，也不在本进程加载合成栈。
+            port = int(self.cfg.get("gateway_port", 8000) or 8000)
+            if not gateway_ctl.port_up(port):
+                ok, msg = gateway_ctl.ensure(self.cfg)
+                log(f"试听前自动拉起网关：ok={ok} {msg}")
+                if ok:
+                    for _ in range(60):       # 最多约 30s 等网关就绪
+                        if gateway_ctl.port_up(port, timeout=0.6):
+                            break
+                        time.sleep(0.5)
             try:
                 pcm, engine_tag = self._preview_via_gateway(voice, text)
-                via = "gateway"
             except Exception as e:  # noqa: BLE001
-                log(f"试听走网关失败，回退本进程合成：{e}")
-            if not pcm:
-                via = "in-process"
-                import asyncio
-                engine = "local" if voice.startswith(LOCAL_PREFIX) \
-                    else str(self.cfg.get("tts_engine") or "auto")
-                router = TTSRouter(voice, 24000, 1440, engine=engine)
-                pcm = asyncio.run(router.preview_pcm(
-                    text, {"rate": 1.0, "pitch": 1.0, "volume": 1.0}))
-                engine_tag = router.last_engine
+                log(f"网关试听失败：{e!r}")
+                return {"ok": False,
+                        "error": "网关没有回应试听请求，请点「重启网关」后重试"}
             if not pcm:
                 return {"ok": False,
-                        "error": "合成没有返回音频（本地神经模型缺失且系统音色不可用）"}
+                        "error": "网关没能合成出试听音频，请打开网关日志查看原因"}
             x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
             used = ""
             dev = devices.resolve(
@@ -1135,7 +1160,7 @@ class Api:
                 return {"ok": False, "error": f"播放失败：{last_err}"}
             engine_final = "local" if engine_tag == "local" else "online"
             log(f"试听完成：voice={voice} engine={engine_tag} "
-                f"via={via} device={used}")
+                f"via=gateway device={used}")
             return {"ok": True,
                     "engine": engine_final,
                     "device": used,

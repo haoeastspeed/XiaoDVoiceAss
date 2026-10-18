@@ -68,6 +68,21 @@ class VisionHandler:
     def handle_explain(self, body, headers, match) -> tuple:
         import asyncio
 
+        # 鉴权：开启后设备必须带 MCP initialize 里下发的 Bearer token。
+        # 早期这里完全没校验，开了 auth_enabled 时视觉端点仍裸奔。
+        from gateway.auth import auth_enabled, make_manager
+        if auth_enabled(self.config):
+            tok = (headers.get("authorization", "") or "").strip()
+            if tok.lower().startswith("bearer "):
+                tok = tok[7:].strip()
+            cid = (headers.get("client-id", "") or "").strip()
+            did = (headers.get("device-id", "") or "").strip()
+            if not tok or not make_manager(self.config).verify_token(
+                    tok, cid or did, did):
+                self._log("视觉上传被拒绝：鉴权失败")
+                return json_response({"success": False,
+                                      "message": "unauthorized"}, 401)
+
         ctype = headers.get("content-type", "")
         if "multipart/form-data" not in ctype.lower():
             return json_response({"success": False,

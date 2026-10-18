@@ -54,7 +54,7 @@ def load_packets():
 async def main():
     packets = load_packets()
     ws = await websockets.connect(
-        WS_URL, additional_headers={"device-id": "wait-test"},
+        WS_URL, extra_headers={"device-id": "wait-test"},
         max_size=None, ping_interval=None)
     stt = ""
     got_tts_start = False

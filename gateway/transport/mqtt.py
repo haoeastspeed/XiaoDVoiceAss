@@ -107,12 +107,25 @@ class UdpAudioEndpoint:
             def error_received(self, exc):
                 pass
 
-        transport, protocol = await loop.create_datagram_endpoint(
-            lambda: _P(self),
-            local_addr=(str(getattr(self.config, "host", "0.0.0.0")), self.port))
+        host = str(getattr(self.config, "host", "0.0.0.0"))
+        try:
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: _P(self), local_addr=(host, self.port))
+        except OSError as e:
+            # 固定端口被占（第二台设备 / 上次会话没释放）→ 交给系统分配。
+            # hello_block 会把实际端口告诉设备，所以不影响连接。
+            self._log(f"UDP 端口 {self.port} 不可用（{e}），改用系统分配")
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: _P(self), local_addr=(host, 0))
+            self.port = transport.get_extra_info("sockname")[1]
         self._transport, self._protocol = transport, protocol
         self._log(f"UDP 音频通道已监听 :{self.port}")
         return self
+
+    def reset(self):
+        """设备重连/重复 hello：设备侧序号从 0 重新开始，这里同步复位。"""
+        self.channel.remote_sequence = 0
+        self.peer = None
 
     def send_audio(self, opus: bytes):
         if self._transport is not None and self.peer is not None:
@@ -151,7 +164,14 @@ class MqttControlChannel:
         host, port = parse_broker(endpoint)
         self._loop = loop
         try:
-            cli = mqtt.Client(client_id="xiaod-gateway", protocol=3)
+            # paho-mqtt 2.x 必须显式给 callback_api_version，否则构造函数
+            # 直接 ValueError（异常被下面 except 吞掉 → MQTT 静默不可用）。
+            try:
+                from paho.mqtt.client import CallbackAPIVersion
+                cli = mqtt.Client(CallbackAPIVersion.VERSION2,
+                                  client_id="xiaod-gateway", protocol=3)
+            except Exception:  # noqa: BLE001
+                cli = mqtt.Client(client_id="xiaod-gateway", protocol=3)
             cli.on_connect = self._on_connect
             cli.on_message = self._on_message
             cli.connect(host, port, keepalive=240)
@@ -163,9 +183,12 @@ class MqttControlChannel:
             self._log(f"MQTT 连接失败（{type(e).__name__}: {e}）")
             return False
 
-    def _on_connect(self, client, _userdata, _flags, rc):
+    def _on_connect(self, client, _userdata, _flags, *args):
+        # *args 兼容 paho 1.x(rc) 与 2.x(reason_code, properties) 两种签名
         try:
-            client.subscribe(PUBLISH_TOPIC, qos=0)
+            # 控制消息（tts:stop / abort / listen）用 QoS1，避免丢帧导致
+            # 服务端状态卡在"正在说话"。
+            client.subscribe(PUBLISH_TOPIC, qos=1)
         except Exception:  # noqa: BLE001
             pass
 

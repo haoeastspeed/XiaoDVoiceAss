@@ -43,7 +43,7 @@ def load_packets():
 async def one_round(round_idx, packets):
     device = f"stab-{round_idx}"
     ws = await websockets.connect(
-        WS_URL, additional_headers={"device-id": device}, max_size=None
+        WS_URL, extra_headers={"device-id": device}, max_size=None
     )
     stt = ""
     replies = []

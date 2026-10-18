@@ -56,6 +56,13 @@ class TTSPreviewHandler:
 
     def handle_preview(self, body: bytes, headers: dict,
                        match) -> Tuple[int, dict, bytes]:
+        # 本地工具端点：只允许本机 GUI 调用。网关默认监听 0.0.0.0，若不加
+        # 限制，局域网里任何人都能白嫖/刷爆合成算力。
+        peer = (headers.get("x-peer-ip") or "").strip()
+        if peer and peer not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            self._log(f"拒绝非本机试听请求：{peer}")
+            return json_response({"success": False,
+                                  "message": "forbidden"}, 403)
         try:
             data = json.loads(body or b"{}")
         except Exception:  # noqa: BLE001

@@ -94,6 +94,7 @@ class XiaoDGateway:
         self._server = None
         self._http = None
         self._mqtt = None
+        self._mqtt_sessions: dict = {}   # mac → {transport, session, ep}
         self._lock = asyncio.Lock()
         self._sessions = 0            # 活跃会话数（空闲自动退出用）
         self._started_at = time.monotonic()
@@ -293,7 +294,10 @@ class XiaoDGateway:
             token = ""
             if req is not None:
                 token = req.headers.get("authorization", "")
-            if not verify_ws_auth(self.config, device_id, token):
+            # 注意签名是 (config, device_id, client_id, authorization)：
+            # 早期这里漏传 client_id，一旦开启鉴权就 TypeError，
+            # 所有设备都不是"被拒绝"而是直接异常断连。
+            if not verify_ws_auth(self.config, device_id, client_id, token):
                 print(f"[gateway] 拒绝连接（{peer}）：鉴权失败 device={device_id}",
                       flush=True)
                 await ws.close(code=1008, reason="unauthorized")
@@ -384,20 +388,54 @@ class XiaoDGateway:
         print(f"[gateway] MQTT 传输已启用（{endpoint}）", flush=True)
 
     async def _on_mqtt_message(self, chan, mac: str, payload: bytes):
-        """设备经 MQTT 发来的控制消息：hello 时建会话 + 下发 UDP 通道配置。"""
+        """设备经 MQTT 发来的消息：hello 建/复用会话 + 下发 UDP 配置；
+        其它控制消息路由给该设备已有会话。
+
+        早期实现只处理 hello、其余一律 return，导致会话永远收不到 listen，
+        _collecting 恒为 False，上行音频 100% 丢弃（MQTT 通道等于全聋）。
+        """
         try:
-            msg = json.loads(payload.decode("utf-8", "replace"))
+            text = payload.decode("utf-8", "replace")
+            msg = json.loads(text)
         except Exception:  # noqa: BLE001
             return
-        if msg.get("type") != "hello":
-            # 其它控制消息由该设备已有会话处理（简化：只处理 hello，
-            # 完整 IM 会话编排在 MQTT 通道下留待后续接入）
+        if not isinstance(msg, dict):
             return
+
+        sess = self._mqtt_sessions.get(mac)
+        if msg.get("type") != "hello":
+            # listen / abort / mcp / goodbye … → 交给该设备会话
+            if isinstance(sess, dict):
+                sess["transport"].feed(text)
+            return
+
+        # 同一设备并发 hello（重连风暴）：先到的那条负责建会话，其余丢弃
+        if sess == "__pending__":
+            return
+
         await self._init_providers()
+
+        # 重复 hello（掉线重连）：复位通道并把 hello 重新喂进会话，
+        # 不重建会话（否则上下文丢失、还可能重复占端口）。
+        if isinstance(sess, dict):
+            try:
+                sess["ep"].reset()
+            except Exception:  # noqa: BLE001
+                pass
+            sess["transport"].feed(text)
+            return
+
         from gateway.transport.mqtt import UdpAudioEndpoint
         from gateway.transport.base import QueueTransport, subscribe_topic
+        self._mqtt_sessions[mac] = "__pending__"   # 占位，挡住并发 hello
         ep = UdpAudioEndpoint(self.config)
-        await ep.start(asyncio.get_event_loop())
+        try:
+            await ep.start(asyncio.get_running_loop())
+        except Exception as e:  # noqa: BLE001
+            self._mqtt_sessions.pop(mac, None)
+            print(f"[gateway] 设备 {mac} 的 UDP 通道建立失败：{e!r}",
+                  flush=True)
+            return
         transport = QueueTransport()
         session = VoiceSession(
             transport, self.config, self._llm, self._asr, self._tts, self._vad,
@@ -409,14 +447,15 @@ class XiaoDGateway:
             if isinstance(data, (bytes, bytearray)):
                 ep.send_audio(bytes(data))
             else:
-                chan.publish(topic, data if isinstance(data, str) else str(data))
+                chan.publish(topic, data if isinstance(data, str)
+                             else str(data))
             return True
 
         transport.send = _send          # type: ignore[assignment]
         ep.on_audio = lambda opus: transport.feed(opus)
+        self._mqtt_sessions[mac] = {"transport": transport,
+                                    "session": session, "ep": ep}
         # 服务端 hello 带 udp 配置
-        hello = json.loads(json.dumps(msg))
-        hello["type"] = "hello"
         chan.publish(topic, json.dumps({
             "type": "hello", "session_id": session.session_id,
             "version": int(msg.get("version", 3)),
@@ -427,11 +466,15 @@ class XiaoDGateway:
                              "channels": 1, "frame_duration":
                              self.config.frame_duration_ms},
         }))
+        # 关键：把设备这条 hello 也喂给会话，否则会话不知道已握手、
+        # 不会进入 listening，后面所有上行音频都被丢弃。
+        transport.feed(text)
         self._sessions += 1
         try:
             await session.run()
         finally:
             self._sessions -= 1
+            self._mqtt_sessions.pop(mac, None)
             ep.close()
 
     async def start(self):

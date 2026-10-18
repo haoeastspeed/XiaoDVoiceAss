@@ -111,11 +111,11 @@ def esp32_handshake(url: str) -> str:
                 m = json.loads(await asyncio.wait_for(ws.recv(), timeout=25))
                 return str(m.get("type") or "")
         except TypeError:
-            # 老版 websockets 用 additional_headers
+            # 老版 websockets 用 extra_headers
             headers2 = dict(headers)
             async with websockets.connect(url, ping_interval=None,
                                           open_timeout=8,
-                                          additional_headers=headers2) as ws:
+                                          extra_headers=headers2) as ws:
                 await ws.send(json.dumps({
                     "type": "hello", "device_id": "esp32-regress",
                     "audio_params": {"format": "opus", "sample_rate": 24000,

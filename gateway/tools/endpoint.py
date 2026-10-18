@@ -74,13 +74,16 @@ class _BaseEndpoint:
         self._log(f"endpoint「{self.name}」就绪：{len(self.tools)} 个工具")
         return self.tool_defs()
 
-    async def _request(self, method: str, params: Optional[dict] = None) -> Any:
+    async def _request(self, method: str, params: Optional[dict] = None,
+                       timeout: float = _INIT_TIMEOUT) -> Any:
         rid = self._next_id
         self._next_id += 1
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": rid, "method": method}
         if params is not None:
             payload["params"] = params
-        resp = await asyncio.wait_for(self._rpc(payload), timeout=_INIT_TIMEOUT)
+        # tools/call 可能跑几十秒（搜索 / 远端服务 / 大文件），不能沿用
+        # init 的 10s 超时——否则外层 30s 永远等不到，慢工具必然"调用超时"。
+        resp = await asyncio.wait_for(self._rpc(payload), timeout=timeout)
         if not isinstance(resp, dict):
             return None
         if "error" in resp:
@@ -148,7 +151,8 @@ class _BaseEndpoint:
         try:
             result = await asyncio.wait_for(
                 self._request("tools/call",
-                              {"name": raw_name, "arguments": arguments}),
+                              {"name": raw_name, "arguments": arguments},
+                              timeout=_CALL_TIMEOUT),
                 timeout=_CALL_TIMEOUT)
         except asyncio.TimeoutError:
             return ToolResult.error(f"endpoint「{self.name}」{raw_name} 调用超时")

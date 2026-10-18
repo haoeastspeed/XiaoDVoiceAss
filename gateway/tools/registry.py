@@ -75,7 +75,21 @@ class ToolRegistry:
     # ---------- 查询 ----------
 
     def get(self, name: str) -> Optional[ToolDef]:
-        return self._tools.get(name)
+        t = self._tools.get(name)
+        if t is not None:
+            return t
+        # 模型有时按描述里的"原始名"回答（如 fs.read_file），而注册表 key 是
+        # sanitize 过的（fs_read_file）。直接查不到会报"未知工具"，所以这里
+        # 先按 sanitize 形式再按 original 反查一次。
+        if not name:
+            return None
+        t = self._tools.get(sanitize_tool_name(name))
+        if t is not None:
+            return t
+        for cand in self._tools.values():
+            if getattr(cand, "original", "") == name:
+                return cand
+        return None
 
     def has(self, name: str) -> bool:
         return name in self._tools

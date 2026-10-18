@@ -155,6 +155,12 @@ _NEURO_MAP = {
     "en-US-DavisNeural": "am_liam",
 }
 
+# EDGE_VOICES 里地区名的大小写并不统一（liaoning / shaanxi 是小写，其余
+# 地区名大写），而这里的 key 是按"读着顺"写的。查表一律用小写索引，
+# 否则东北/陕西腔降级时会查不到、静默落到默认女声。
+_NEURO_MAP_LOW = {k.lower(): v for k, v in _NEURO_MAP.items()}
+_LOCAL_PREF_LOW = {k.lower(): v for k, v in _LOCAL_PREF.items()}
+
 # 在线音色 id 里的性别线索（给 _NEURO_MAP 没覆盖到的音色兜底）
 _GENDER_FEMALE = ("xiaoxiao", "xiaoyi", "xiaobei", "xiaoni", "xiaohan",
                   "hsiaochen", "hsiaoyu", "hiugaai", "hiulai", "jenny",
@@ -184,7 +190,7 @@ def _pick_neuro(voice: str) -> str:
         return "zf_xiaoxiao"
     if tts_kokoro.is_neuro_id(v):
         return v                      # 用户直接选的就是神经音色
-    hit = _NEURO_MAP.get(v)
+    hit = _NEURO_MAP_LOW.get(v.lower())
     if hit:
         return hit
     low = v.lower()
@@ -209,7 +215,7 @@ def _pick_local(voice: str) -> str:
     v = (voice or "")
     if not v or "-" not in v:
         return ""
-    pref = _LOCAL_PREF.get(v)
+    pref = _LOCAL_PREF_LOW.get(v.lower())
     if pref is None:
         # 表里没有的音色：按 id 前缀猜（zh-TW-xxx → 台湾、en-xxx → 英语）
         lang = "-".join(v.split("-")[:2])
@@ -260,8 +266,10 @@ class TTSRouter(BaseTTS):
         self._ok_streak = 0        # 连续成功次数（重置退避用）
         self.last_engine = ""      # 实际使用的引擎（诊断）
         self.online_failures = 0
-        self.degraded = False      # 在线不可用、正临时用本地（供上层提示用户）
-        self.last_error = ""       # 最近一次在线失败原因（提示用）
+        # 在线依赖缺失时直接标记降级，界面/日志能说明原因
+        self.degraded = not tts_edge.available()
+        self.last_error = (tts_edge.import_error()
+                           if not tts_edge.available() else "")
 
     # ---------- 音色解析 ----------
 
@@ -334,6 +342,10 @@ class TTSRouter(BaseTTS):
     def want_local(self) -> bool:
         """当前音色/引擎是否走本地离线。"""
         if self.engine == "local":
+            return True
+        # 在线依赖缺失（edge-tts / miniaudio 没装）→ 直接走本地：否则每句
+        # 都要先试在线、失败再降级，用户多等几秒还刷一堆失败日志。
+        if not tts_edge.available():
             return True
         if self.engine == "online":
             return False
@@ -518,9 +530,25 @@ class LocalFallbackTTS(BaseTTS):
                  frame_size: int = 1440):
         self.sample_rate = sample_rate
         self.frame_size = frame_size
-        self.voice_id = voice_id or ""
+        self._voice_id = ""
         self._neuro = tts_kokoro.KokoroTTS(voice_id, sample_rate, frame_size)
         self._sapi = SapiTTS(voice_id, sample_rate, frame_size)
+        self.voice_id = voice_id or ""      # 走 setter，同步到两个实现
+
+    @property
+    def voice_id(self) -> str:
+        return self._voice_id
+
+    @voice_id.setter
+    def voice_id(self, value: str) -> None:
+        """必须同步到内部实现：Kokoro/SAPI 各持一份 voice_id，只改外层的话
+        真正合成时仍用构造时的旧音色（用户听到的就是"切了音色没变"）。"""
+        v = value or ""
+        object.__setattr__(self, "_voice_id", v)
+        for impl in (getattr(self, "_neuro", None),
+                     getattr(self, "_sapi", None)):
+            if impl is not None:
+                impl.voice_id = v
 
     def _pick(self):
         """按当前音色 id 选择实现：神经音色 id 走 Kokoro，其余走 SAPI。"""

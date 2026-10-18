@@ -46,6 +46,10 @@ class ToolCallLoop:
         self.tool_timeout = tool_timeout
         self._log = logger or (lambda m: print(f"[tool-loop] {m}", flush=True))
         self._consecutive_fail = 0
+        # 熔断只在**本会话**生效：早期实现直接改全局 LLM 的 supports_tools，
+        # 一个会话失败 3 次会把进程内所有会话的工具能力永久关掉（要重启
+        # 网关才恢复），而且"工具执行失败"也会被算进通道失败。
+        self._tools_disabled = False
 
     # ---------- 对外主入口 ----------
 
@@ -79,7 +83,10 @@ class ToolCallLoop:
                 self._log(f"带工具请求失败（{type(e).__name__}: {e}），"
                           f"回落普通对话")
                 if self._consecutive_fail >= _FAIL_LIMIT:
-                    _disable_tools(self.llm)
+                    # 只禁**本会话**，不动全局 LLM：别的会话/设备不受影响，
+                    # 也不需要重启网关才能恢复。
+                    self._tools_disabled = True
+                    self._log("工具通道连续失败，本会话回退普通对话")
                 async for sent in self._fallback(messages, buf, got_content):
                     yield sent
                 return
@@ -122,7 +129,7 @@ class ToolCallLoop:
     # ---------- 内部 ----------
 
     def _use_tools(self) -> bool:
-        if not self.enable_tools:
+        if not self.enable_tools or self._tools_disabled:
             return False
         if not self.registry or len(self.registry) == 0:
             return False
@@ -169,16 +176,17 @@ class ToolCallLoop:
         name = tc.get("name", "")
         tool = self.registry.get(name)
         if tool is None or tool.handler is None:
-            self._consecutive_fail += 1
+            # 未知工具是"模型给了个不存在的名字"，不是通道故障：不计入熔断，
+            # 否则几次工具名笔误就把整会话的工具能力关掉。
             return ToolResult.error(f"未知工具：{name}")
         try:
             res = await asyncio.wait_for(tool.handler(tc.get("arguments")),
                                          timeout=self.tool_timeout)
         except asyncio.TimeoutError:
-            self._consecutive_fail += 1
+            # 工具自身超时 ≠ 通道故障，不计入熔断
             return ToolResult.error(f"工具 {name} 执行超时")
         except Exception as e:  # noqa: BLE001
-            self._consecutive_fail += 1
+            # 工具执行异常 ≠ 通道故障，不计入熔断
             return ToolResult.error(f"工具 {name} 执行失败：{e}")
         return res
 

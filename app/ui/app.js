@@ -15,6 +15,7 @@
   let askAt = 0, ttftDone = true;
   let gwTick = 0;
   let gwActing = false;      // 网关正在启停时加密刷新，让文案立刻跟上
+  let gwLastErr = "";        // 已提示过的网关错误（去重，避免每轮 poll 刷屏）
 
   /* ---------- 状态 ---------- */
   function setStatus(kind, text) {
@@ -67,6 +68,16 @@
         : (g.models_ready ? " ok" : ""));
     }
     setGwAddr(g);
+    // 启动失败时主界面也弹一次气泡：gwInfo 的小字很容易被忽略，
+    // 用户只会看到"网关未运行"却不知道为什么。
+    if (!acting && !g.up && g.msg && /失败|异常|错误/.test(g.msg)) {
+      if (g.msg !== gwLastErr) {
+        gwLastErr = g.msg;
+        showErr("网关：" + g.msg);
+      }
+    } else if (g.up) {
+      gwLastErr = "";
+    }
   }
 
   function setGwAddr(g) {
@@ -263,11 +274,52 @@
     return hasGroup;
   }
 
+  /* ---------- 统一配置写入（带结果反馈） ---------- */
+
+  // 界面上很多开关改完毫无反馈，其中一部分还要静默重启网关（几十秒才生效），
+  // 用户只会觉得"点了没反应"。这里统一收口：失败报错，需要重启时明说。
+  async function applyOpt(key, value, tip) {
+    let r = null;
+    try {
+      r = await applyOpt(key, value);
+    } catch (e) {
+      showErr("保存失败：" + e);
+      return false;
+    }
+    if (!r || !r.ok) {
+      showErr((r && r.error) || "保存失败");
+      return false;
+    }
+    if (r.restarting) {
+      showSys((tip ? tip + " · " : "") + "正在重启网关…");
+    } else if (tip) {
+      showSys(tip);
+    }
+    return true;
+  }
+
   /* ---------- 初始化 ---------- */
   async function bootstrap() {
-    let r;
-    try { r = await api().bootstrap(); } catch (e) { return; }
-    if (!r || !r.ok) return;
+    // 旧实现：失败直接 return，界面永远停在"正在准备…"，只能重启软件。
+    // pywebview 冷启动（尤其首次拉模型列表、网关还在起）时 API 偶尔还没
+    // 就绪，这里有限重试；彻底失败再给一个可点击的重试入口。
+    let r = null;
+    for (let i = 0; i < 5; i++) {
+      try {
+        const t = await api().bootstrap();
+        if (t && t.ok) { r = t; break; }
+      } catch (e) { /* 尚未就绪，继续重试 */ }
+      if (i < 4) await new Promise((s) => setTimeout(s, 600));
+    }
+    if (!r) {
+      const t = $("statusText");
+      if (t) {
+        t.textContent = "加载失败，点此重试";
+        t.style.cursor = "pointer";
+        t.onclick = () => location.reload();
+      }
+      return;
+    }
     BOOT = r;
     const dev = r.devices || {};
     if (dev.error) showErr(dev.error);
@@ -424,22 +476,36 @@
 
   /* ---------- 设置项 ---------- */
   $("micSel").addEventListener("change", async () => {
-    await api().set_option("mic_index", parseInt($("micSel").value, 10));
-    await api().set_option("mic_name",
+    await applyOpt("mic_index", parseInt($("micSel").value, 10));
+    await applyOpt("mic_name",
       $("micSel").selectedOptions[0] ? $("micSel").selectedOptions[0].textContent : "");
     showSys("麦克风已切换，下次聊天生效");
   });
   $("spkSel").addEventListener("change", async () => {
-    await api().set_option("speaker_index", parseInt($("spkSel").value, 10));
-    await api().set_option("speaker_name",
+    await applyOpt("speaker_index", parseInt($("spkSel").value, 10));
+    await applyOpt("speaker_name",
       $("spkSel").selectedOptions[0] ? $("spkSel").selectedOptions[0].textContent : "");
     showSys("扬声器已切换，下次聊天生效");
   });
   $("rescanBtn").addEventListener("click", async () => {
-    const r = await api().rescan_devices();
-    fillSel($("micSel"), r.devices.inputs || [], parseInt($("micSel").value, 10), "mic");
-    fillSel($("spkSel"), r.devices.outputs || [], parseInt($("spkSel").value, 10), "spk");
-    showSys("设备已重新扫描");
+    // 扫描失败时要把原因显示出来：旧实现异常变成未捕获 Promise，
+    // 按钮点了完全没反应。
+    const btn = $("rescanBtn");
+    const label = btn.textContent;
+    btn.textContent = "扫描中…";
+    btn.disabled = true;
+    try {
+      const r = await api().rescan_devices();
+      if (!r || !r.ok) { showErr((r && r.error) || "扫描设备失败"); return; }
+      fillSel($("micSel"), r.devices.inputs || [], parseInt($("micSel").value, 10), "mic");
+      fillSel($("spkSel"), r.devices.outputs || [], parseInt($("spkSel").value, 10), "spk");
+      showSys("设备已重新扫描");
+    } catch (e) {
+      showErr("扫描设备失败：" + e);
+    } finally {
+      btn.textContent = label;
+      btn.disabled = false;
+    }
   });
   $("modelSel").addEventListener("change", async () => {
     if ($("modelSel").value === "__no_ollama__") {
@@ -489,7 +555,7 @@
     }
   });
   $("searchMaxSel").addEventListener("change", async () => {
-    await api().set_option("web_search_max", parseInt($("searchMaxSel").value, 10));
+    await applyOpt("web_search_max", parseInt($("searchMaxSel").value, 10));
   });
   $("presetSel").addEventListener("change", async () => {
     const name = $("presetSel").value;
@@ -515,15 +581,14 @@
   $("volRange").addEventListener("change", async () => {
     const v = Number($("volRange").value) || 1.0;
     $("volVal").textContent = Math.round(v * 100) + "%";
-    const r = await api().set_option("play_volume", v);
-    if (r && r.ok) showSys("播放音量已设为 " + Math.round(v * 100) + "%");
+    await applyOpt("play_volume", v, "播放音量已设为 " + Math.round(v * 100) + "%");
   });
   $("volRange").addEventListener("input", () => {
     $("volVal").textContent = Math.round((Number($("volRange").value) || 1) * 100) + "%";
   });
-  $("topChk").addEventListener("change", () => api().set_option("always_on_top", $("topChk").checked));
+  $("topChk").addEventListener("change", () => applyOpt("always_on_top", $("topChk").checked));
   $("gwAutoChk").addEventListener("change", () => {
-    api().set_option("auto_start_gateway", $("gwAutoChk").checked);
+    applyOpt("auto_start_gateway", $("gwAutoChk").checked);
     showSys($("gwAutoChk").checked
       ? "已开启：打开软件自动启动网关并加载离线模型"
       : "已关闭：需要手动点「启动网关」");
@@ -532,7 +597,7 @@
   $("llmBackendSel").addEventListener("change", async () => {
     const v = $("llmBackendSel").value;
     $("llmOnlineBox").hidden = v !== "openai";
-    await api().set_option("llm_backend", v);
+    await applyOpt("llm_backend", v);
     showSys(v === "openai"
       ? "已切到在线 API：填好地址和 Key 后点「测试连通性」（正在重启网关）"
       : "已切回本地 Ollama，离线可用（正在重启网关）");
@@ -542,19 +607,21 @@
     const p = (BOOT.llm_presets || []).find((x) => x.id === pid);
     if (!p) { applyKeyHint(BOOT); return; }
     $("llmBaseInp").value = p.base_url || "";
-    await api().set_option("llm_preset", pid);
-    await api().set_option("llm_api_base", p.base_url || "");
+    await applyOpt("llm_preset", pid);
+    await applyOpt("llm_api_base", p.base_url || "");
     if (p.model) {
       $("modelSel").value = p.model;
-      await api().set_option("model", p.model);
+      // 必须走 set_model：它会同步运行中的客户端；用 set_option 只写配置，
+      // 当前会话仍用旧模型（界面显示与实际生效不一致）。
+      await api().set_model(p.model);
     }
     applyKeyHint(BOOT);
     showSys("已套用「" + p.name + "」，填好 Key 后点「测试连通性」");
   });
   $("llmBaseInp").addEventListener("change", () =>
-    api().set_option("llm_api_base", $("llmBaseInp").value.trim()));
+    applyOpt("llm_api_base", $("llmBaseInp").value.trim()));
   $("llmKeyInp").addEventListener("change", () =>
-    api().set_option("llm_api_key", $("llmKeyInp").value.trim()));
+    applyOpt("llm_api_key", $("llmKeyInp").value.trim()));
   $("llmTestBtn").addEventListener("click", async () => {
     $("llmTestTip").textContent = "测试中…";
     const r = await api().test_llm();
@@ -565,23 +632,26 @@
   /* ---------- 记忆 / 语言 / 休眠 / 家居 ---------- */
   $("memorySel").addEventListener("change", async () => {
     const v = $("memorySel").value;
-    await api().set_option("memory_mode", v);
+    await applyOpt("memory_mode", v);
     showSys(v === "none" ? "已切为无记忆：每句话都独立"
       : v === "summary" ? "已切为本地总结：较早的对话会被压成摘要"
       : "已切为超长记忆：保留完整对话");
   });
   $("memModelSel").addEventListener("change", () =>
-    api().set_option("memory_summary_model", $("memModelSel").value));
+    applyOpt("memory_summary_model", $("memModelSel").value));
   $("langSel").addEventListener("change", async () => {
     const v = $("langSel").value;
-    await api().set_option("asr_language", v);
+    await applyOpt("asr_language", v);
     const rec = LANG_VOICE[v];
     $("langTip").textContent = rec ? "推荐音色：" + rec : "自动判断语种";
   });
   $("langVoiceBtn").addEventListener("click", async () => {
     const rec = LANG_VOICE[$("langSel").value];
     if (!rec) { showSys("「自动判断」没有对应的推荐音色"); return; }
-    await api().set_option("voice", rec);
+    // 必须走 set_voice：同步运行中的客户端并联动 tts_engine
+    // （在线音色→auto / 离线音色→local）；用 set_option 只写配置，
+    // 通话中点它无效却提示"音色已切换"。
+    await api().set_voice(rec);
     const b = await api().bootstrap();
     BOOT = b;
     fillSel($("voiceSel"), b.voices || [], b.cfg.voice);
@@ -590,18 +660,18 @@
     showSys("音色已切换为 " + rec);
   });
   $("sleepSel").addEventListener("change", () =>
-    api().set_option("idle_sleep_s", parseInt($("sleepSel").value, 10)));
+    applyOpt("idle_sleep_s", parseInt($("sleepSel").value, 10)));
   $("haChk").addEventListener("change", () => {
     const on = $("haChk").checked;
     $("haBox").hidden = !on;
-    api().set_option("ha_enabled", on);
+    applyOpt("ha_enabled", on);
     showSys(on ? "已开启智能家居，填好地址和令牌后点「测试连接」"
                : "已关闭智能家居");
   });
   $("haBaseInp").addEventListener("change", () =>
-    api().set_option("ha_base_url", $("haBaseInp").value.trim()));
+    applyOpt("ha_base_url", $("haBaseInp").value.trim()));
   $("haTokenInp").addEventListener("change", () =>
-    api().set_option("ha_token", $("haTokenInp").value.trim()));
+    applyOpt("ha_token", $("haTokenInp").value.trim()));
   $("haTestBtn").addEventListener("click", async () => {
     $("haTestTip").textContent = "测试中…";
     const r = await api().ha_test();
@@ -614,7 +684,7 @@
     showSys(v === "127.0.0.1"
       ? "已改为仅本机：ESP32 等设备将连不上（正在重启网关）"
       : "已改为局域网可连，设备配网填下方「本机地址」（正在重启网关）");
-    await api().set_option("gateway_host", v);
+    await applyOpt("gateway_host", v);
   });
   if ($("echoCancelSel")) {
     $("echoCancelSel").addEventListener("change", async () => {
@@ -622,44 +692,44 @@
       showSys(v === "off"
         ? "回声消除已关闭：播放期不判打断，只认按钮 / Esc（正在重启网关）"
         : "回声消除已开启：消掉自己的回声后仍可语音打断（正在重启网关）");
-      await api().set_option("echo_cancel", v);
+      await applyOpt("echo_cancel", v);
     });
   }
   if ($("echoCoolSel")) {
     $("echoCoolSel").addEventListener("change", async () => {
       const v = Number($("echoCoolSel").value);
       showSys("说完后静默 " + (v / 1000).toFixed(1) + " 秒再开始听（正在重启网关）");
-      await api().set_option("echo_gate_cooldown_ms", v);
+      await applyOpt("echo_gate_cooldown_ms", v);
     });
   }
-  $("autoChk").addEventListener("change", () => api().set_option("auto_start_call", $("autoChk").checked));
+  $("autoChk").addEventListener("change", () => applyOpt("auto_start_call", $("autoChk").checked));
   // ---- 工具与扩展（MCP / 视觉 / 声纹 / 实时 / 唤醒词）----
   $("toolsFirstChk").addEventListener("change", async () => {
-    await api().set_option("tools_first", $("toolsFirstChk").checked);
+    await applyOpt("tools_first", $("toolsFirstChk").checked);
     showSys("已" + ($("toolsFirstChk").checked ? "开启" : "关闭") + "工具调用，重启网关后生效");
   });
   $("mcpChk").addEventListener("change", async () => {
-    await api().set_option("mcp_enabled", $("mcpChk").checked);
+    await applyOpt("mcp_enabled", $("mcpChk").checked);
     showSys("已" + ($("mcpChk").checked ? "启用" : "关闭") + " MCP，重启网关后生效");
   });
   $("visionChk").addEventListener("change", () =>
-    api().set_option("vision_enabled", $("visionChk").checked));
+    applyOpt("vision_enabled", $("visionChk").checked));
   $("camIdxInp").addEventListener("change", () =>
-    api().set_option("vision_camera_index", parseInt($("camIdxInp").value, 10) || 0));
+    applyOpt("vision_camera_index", parseInt($("camIdxInp").value, 10) || 0));
   $("vpChk").addEventListener("change", () =>
-    api().set_option("voiceprint_enabled", $("vpChk").checked));
+    applyOpt("voiceprint_enabled", $("vpChk").checked));
   $("vpBaseInp").addEventListener("change", () =>
-    api().set_option("voiceprint_base_url", $("vpBaseInp").value.trim()));
+    applyOpt("voiceprint_base_url", $("vpBaseInp").value.trim()));
   $("rtChk").addEventListener("change", () =>
-    api().set_option("realtime_enabled", $("rtChk").checked));
+    applyOpt("realtime_enabled", $("rtChk").checked));
   $("rtBaseInp").addEventListener("change", () =>
-    api().set_option("realtime_base_url", $("rtBaseInp").value.trim()));
+    applyOpt("realtime_base_url", $("rtBaseInp").value.trim()));
   $("wakeSel").addEventListener("change", async () => {
-    await api().set_option("wake_mode", $("wakeSel").value);
+    await applyOpt("wake_mode", $("wakeSel").value);
     showSys("唤醒方式已更新，下次开始聊天生效");
   });
   $("saveChk").addEventListener("change", () => {
-    api().set_option("save_transcript", $("saveChk").checked);
+    applyOpt("save_transcript", $("saveChk").checked);
     showSys($("saveChk").checked ? "结束后自动保存对话记录" : "已关闭自动保存");
   });
   $("bootChk").addEventListener("change", async () => {
@@ -715,9 +785,12 @@
   $("exportBtn").addEventListener("click", async () => {
     const r = await api().export_transcript();
     if (r && r.ok) showSys("已导出：" + r.path);
+    else if (r && r.cancelled) showSys("已取消导出");   // 取消不是错误，别报红
     else showErr((r && r.error) || "导出失败");
   });
   $("clearBtn").addEventListener("click", async () => {
+    // 清空不可撤销 → 二次确认，避免手滑丢掉整段对话
+    if (!confirm("确定清空当前对话记录吗？清空后无法恢复。")) return;
     await api().clear_history();
     clearBubbles();
     showSys("对话已清空");

@@ -53,7 +53,7 @@ async def send_packets(ws, packets):
 
 async def main():
     ws = await websockets.connect(
-        WS_URL, additional_headers={"device-id": "barge-test"}, max_size=None
+        WS_URL, extra_headers={"device-id": "barge-test"}, max_size=None
     )
     stt_texts = []
     tts_start_count = 0

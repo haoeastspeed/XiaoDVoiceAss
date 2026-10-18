@@ -128,21 +128,28 @@ class HomeAssistant:
         except Exception:  # noqa: BLE001
             return []
 
-    def _match_entity(self, entities: List[dict], keyword: str) -> str:
+    def _match_entity(self, entities: List[dict], keyword: str,
+                      domain: str = "") -> str:
         """设备名关键词 → entity_id。
 
-        先按 friendly_name 包含关键词匹配，再退到 entity_id 本身。都匹配不上
-        但**只有一个**候选设备时就用它——"把灯关了"这种话用户不会报全名。"""
+        先按 friendly_name 包含关键词匹配，再退到 entity_id 本身；都匹配不上
+        但**该 domain 下只有一个**设备时就用它——"把灯关了"这种话用户不会
+        报全名，旧实现这里直接返回空，于是带空 entity_id 调服务被 HA 打 400。"""
         kw = (keyword or "").strip()
-        if not kw:
-            return ""
+        pool = entities
+        if domain:
+            pool = [e for e in entities
+                    if (e.get("entity_id") or "").startswith(domain + ".")]
         cands = []
-        for e in entities:
-            fn = ((e.get("attributes") or {}).get("friendly_name") or "")
-            eid = e.get("entity_id") or ""
-            if kw in fn or kw in eid:
-                cands.append((len(fn), eid))
+        if kw:
+            for e in pool:
+                fn = ((e.get("attributes") or {}).get("friendly_name") or "")
+                eid = e.get("entity_id") or ""
+                if kw in fn or kw in eid:
+                    cands.append((len(fn), eid))
         if not cands:
+            if len(pool) == 1:
+                return pool[0].get("entity_id") or ""
             return ""
         cands.sort()
         return cands[0][1]
@@ -204,10 +211,18 @@ class HomeAssistant:
         if not domain or not service:
             return None          # 抽不出来就当普通对话，别瞎执行
         entity_id = ""
+        ents = await self.states()
         if entity_kw:
-            entity_id = self._match_entity(await self.states(), entity_kw)
+            entity_id = self._match_entity(ents, entity_kw, domain)
             if not entity_id:
                 return f"没找到名叫「{entity_kw}」的设备。"
+        else:
+            # 模型没给设备名（"把灯关了"）：该 domain 下只有一个设备就用它；
+            # 多个则不带 entity_id，由 HA 对整类执行（light.turn_off 合法）。
+            same = [e for e in ents
+                    if (e.get("entity_id") or "").startswith(domain + ".")]
+            if len(same) == 1:
+                entity_id = same[0].get("entity_id") or ""
         ok, err = await self.call_service(domain, service, entity_id,
                                           intent.get("value"))
         if ok:

@@ -74,9 +74,17 @@ class RealtimeSession:
     async def connect(self):
         headers = {"Authorization": f"Bearer {self.api_key}",
                    "OpenAI-Beta": "realtime=v1"}
-        self._ws = await websockets.connect(
-            self.url, additional_headers=headers, max_size=None,
-            ping_interval=20, ping_timeout=60)
+        # websockets 13.x 的 legacy API 只认 extra_headers，14+ 才叫
+        # additional_headers。传错的那个会被塞进 **kwargs 透传给
+        # asyncio.create_connection → TypeError（realtime 一开启就崩）。
+        try:
+            self._ws = await websockets.connect(
+                self.url, additional_headers=headers, max_size=None,
+                ping_interval=20, ping_timeout=60)
+        except TypeError:
+            self._ws = await websockets.connect(
+                self.url, extra_headers=headers, max_size=None,
+                ping_interval=20, ping_timeout=60)
         await self._send({
             "type": "session.update",
             "session": {

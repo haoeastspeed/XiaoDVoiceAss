@@ -72,9 +72,13 @@ class UdpAudioChannel:
         payload = datagram[_HDR_SIZE:]
         if plen and plen > len(payload):
             raise ValueError("声明长度超过实际负载")
-        if seq <= self.remote_sequence:
-            raise ValueError(f"重放/乱序丢弃（seq={seq} <= "
-                             f"{self.remote_sequence}）")
+        prev = self.remote_sequence
+        if prev:
+            # 序号是 32 位：长会话会回绕，设备重连也从 0 重新开始。严格
+            # seq<=prev 会把回绕后的包全当重放丢掉（表现为"突然没声音了"）。
+            diff = (seq - prev) & 0xFFFFFFFF
+            if diff == 0 or diff > 0x7FFFFFFF:
+                raise ValueError(f"重放/乱序丢弃（seq={seq} <= {prev}）")
         if seq != self.remote_sequence + 1 and not self._warned_gap:
             self._warned_gap = True
             self._log(f"UDP 序号不连续：{self.remote_sequence} → {seq}")

@@ -72,6 +72,10 @@ class GatewayHTTP:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
                 headers = {k.lower(): v for k, v in self.headers.items()}
+                # 把来源地址塞进 headers：本地工具端点（如 /tts/preview/）要判断
+                # "是不是本机 GUI 在调"，塞进 headers 就不用给所有 handler 改签名。
+                headers["x-peer-ip"] = (self.client_address[0]
+                                        if self.client_address else "")
                 try:
                     res = outer.dispatch(method, self.path, body, headers)
                 except Exception as e:  # noqa: BLE001
