@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import AsyncIterator, List, Optional
 
@@ -82,6 +83,49 @@ def _sapi_gender(desc: str) -> str:
         if w in _SAPI_MALE:
             return "m"
     return ""
+
+
+# ---------- 可朗读化：把 LLM 输出里"不是给人耳"的符号洗掉 ----------
+# 用户原话："那个信号特殊符号和以些表情就不要再读出来了" —— 星号/井号/
+# emoji/箭头这些 TTS 要么念名字要么跳不出声，念出来就是机器味。
+
+# Markdown 链接 [文字](url) → 只留文字；图片 ![alt](url) → 删
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+# Markdown/装饰符号：星号、下划线、反引号、井号、波浪线、尖括号、竖线、反斜杠
+_MD_CHARS = re.compile(r"[*_`#~^|\\<>]+")
+# 行首列表符号（- / • / · / ▪ / *）→ 删（保留行内的连字符，如 Wi-Fi、-5）
+_BULLET = re.compile(r"(?m)^\s*[-•·▪*]\s+")
+# emoji / 表情符号 / 装饰符号（念出来全是"笑脸""星星"之类的噪音）：
+#   补充符号区、杂项符号、杂项技术、几何图形、丁巴特、箭头、区域旗、
+#   变体选择符、零宽连接符、组合键帽、专用区
+_EMOJI = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # emoji 主区（含表情/手势/物品/旗帜）
+    "\U0001F900-\U0001F9FF"   # 补充符号
+    "\U00002600-\U000027BF"   # 杂项符号 + 丁巴特（★☆♪✂…）
+    "\U00002B00-\U00002BFF"   # 箭头/星形（⭐⬆…）
+    "\U00002190-\U000021FF"   # 箭头（→←）
+    "\U00002300-\U000023FF"   # 杂项技术（⏰⌘）
+    "\U000025A0-\U000025FF"   # 几何图形（●○▪）
+    "\U0000FE00-\U0000FE0F"   # 变体选择符
+    "\U0000200B-\U0000200F"   # 零宽字符/方向标记
+    "\U000020E3"              # 组合键帽
+    "\U0000E000-\U0000F8FF"   # 私有区（部分客户端用这区放表情）
+    "]+")
+# 多余空白折叠
+_SPACES = re.compile(r"[ \t]{2,}")
+
+
+def _speakable(text: str) -> str:
+    """把 LLM 回复洗成适合朗读的纯文本（不动中文标点与常规符号）。"""
+    if not text:
+        return text
+    out = _MD_LINK.sub(r"\1", text)
+    out = _EMOJI.sub("", out)
+    out = _BULLET.sub("", out)
+    out = _MD_CHARS.sub("", out)
+    out = _SPACES.sub(" ", out)
+    return out.strip()
 
 
 # 在线音色 → 本地神经音色的直接对应（同名最好：降级后听感上"不太像换了
@@ -327,7 +371,7 @@ class TTSRouter(BaseTTS):
             return None, None
 
     async def stream(self, text: str, style: Optional[dict] = None):
-        text = (text or "").strip()
+        text = _speakable((text or "").strip())
         if not text:
             return
         try:
@@ -403,6 +447,7 @@ async def _preview(self, text: str, style: Optional[dict] = None) -> bytes:
     """试听用：返回 24k s16le PCM（在线失败自动用本地）。
 
     last_engine 一并记下，界面据此显示"这条样本实际是谁合成的"。"""
+    text = _speakable((text or "").strip())
     if not self.want_local:
         self.last_engine = "online"
         try:
