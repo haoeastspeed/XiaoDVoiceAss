@@ -284,12 +284,19 @@ def ensure(cfg: dict, wait_s: float = 45.0) -> tuple[bool, str]:
                             "a", encoding="utf-8")
             except Exception:  # noqa: BLE001
                 logf = subprocess.DEVNULL
+            # 双保险：即使某些 Windows 版本对 CREATE_NO_WINDOW 处理不一致，
+            # 也用 STARTUPINFO 把窗口强制隐藏（网关子进程本身无窗口，冗余但无害）。
+            si = None
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+                si.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
             try:
                 _proc = subprocess.Popen(
                     _build_cmd(cfg_path, port), env=env, creationflags=flags,
                     stdin=subprocess.DEVNULL, stdout=logf,
                     stderr=subprocess.STDOUT, close_fds=True,
-                    cwd=acfg.data_dir())
+                    cwd=acfg.data_dir(), startupinfo=si)
             except Exception as e:  # noqa: BLE001
                 return False, f"网关启动失败：{e}"
             if want_lan:

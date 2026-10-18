@@ -68,10 +68,17 @@ def ensure(base_url: str = "", wait_s: float = 12.0,
     try:
         flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                  | getattr(subprocess, "DETACHED_PROCESS", 0))
+        # 双保险：即使某些 Windows 版本对 CREATE_NO_WINDOW 处理不一致，
+        # 也用 STARTUPINFO 把窗口强制隐藏，绝不弹黑窗。
+        si = None
+        if os.name == "nt":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+            si.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
         _PROC = subprocess.Popen(
             [exe, "serve"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=flags)
+            creationflags=flags, startupinfo=si)
         log(f"已拉起 ollama serve：{exe} (pid={_PROC.pid})")
     except Exception as e:  # noqa: BLE001
         return False, f"启动 Ollama 失败：{e}"
