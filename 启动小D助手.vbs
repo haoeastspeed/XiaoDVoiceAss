@@ -1,36 +1,44 @@
 ' ============================================================
-'  å°Dè¯­éŸ³é™ªèŠåŠ©æ‰‹ Â· å¯åŠ¨å™¨ï¼ˆæ— çª—å£ï¼Œç»ä¸ä¼šå¼¹å‡ºé»‘è‰²å‘½ä»¤çª—ï¼‰
-'  ç›´æ¥åŒå‡»æœ¬æ–‡ä»¶å³å¯å¯åŠ¨ï¼›ä¹Ÿå¯æ”¾åˆ°ã€Œå¯åŠ¨ã€ç›®å½•åšå¼€æœºè‡ªå¯ã€‚
-'  åŸç†ï¼šæœ¬è„šæœ¬è‡ªèº«ç”¨ wscript å®¿ä¸»è¿è¡Œï¼ˆæ— æ§åˆ¶å°ï¼‰ï¼Œå†ä»¥
-'  éšè—æ–¹å¼å¯åŠ¨ å°Dæ™ºèƒ½åŠ©æ‰‹.exeï¼ˆexe æœ¬èº«ä¹Ÿæ˜¯æ— æ§åˆ¶å°çª—å£ç¨‹åºï¼‰ã€‚
+'  Ğ¡DÓïÒôÅãÁÄÖúÊÖ ¡¤ Æô¶¯Æ÷£¨ÎŞ´°¿Ú£¬¾ø²»»áµ¯³öºÚÉ«ÃüÁî´°£©
+'  Ö±½ÓË«»÷±¾ÎÄ¼ş¼´¿ÉÆô¶¯£»Ò²¿É·Åµ½¡¸Æô¶¯¡¹Ä¿Â¼×ö¿ª»ú×ÔÆô¡£
+'  Ô­Àí£º±¾½Å±¾×ÔÉíÓÃ wscript ËŞÖ÷ÔËĞĞ£¨ÎŞ¿ØÖÆÌ¨£©£¬ÔÙÒÔ
+'  Òş²Ø·½Ê½Æô¶¯ Ğ¡DÖÇÄÜÖúÊÖ.exe£¨exe ±¾ÉíÒ²ÊÇÎŞ¿ØÖÆÌ¨´°¿Ú³ÌĞò£©¡£
+'  ¶à¸ö¹¹½¨²¢´æÊ±£¬×Ô¶¯Ñ¡Ê±¼ä×îĞÂµÄÄÇ¸ö£¬±ÜÃâÆô¶¯µ½¾É°æ¡£
 ' ============================================================
 Option Explicit
-Dim sh, fso, base, exe, cands, i, c
+Dim sh, fso, base, exe, cands, i, bestTs, haveBest
 Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 base = fso.GetParentFolderName(WScript.ScriptFullName)
 
-' ä¾æ¬¡å°è¯•å¸¸è§ä½ç½®ï¼Œæ‰¾åˆ°çœŸæ­£çš„ exe å³å¯
+' ÒÀ´Î³¢ÊÔ³£¼ûÎ»ÖÃ£¨Í¬Ä¿Â¼ > ĞÂ¹¹½¨ > ¾É¹¹½¨£©£¬Ñ¡×îĞÂµÄ
 cands = Array( _
-    base & "\å°Dæ™ºèƒ½åŠ©æ‰‹.exe", _
-    base & "\dist\å°Dæ™ºèƒ½åŠ©æ‰‹\å°Dæ™ºèƒ½åŠ©æ‰‹.exe", _
-    base & "\dist_crashfix\å°Dæ™ºèƒ½åŠ©æ‰‹\å°Dæ™ºèƒ½åŠ©æ‰‹.exe" _
+    base & "\Ğ¡DÖÇÄÜÖúÊÖ.exe", _
+    base & "\dist_crashfix\Ğ¡DÖÇÄÜÖúÊÖ\Ğ¡DÖÇÄÜÖúÊÖ.exe", _
+    base & "\dist\Ğ¡DÖÇÄÜÖúÊÖ\Ğ¡DÖÇÄÜÖúÊÖ.exe" _
 )
+
 exe = ""
+haveBest = False
 For i = 0 To UBound(cands)
-    c = cands(i)
-    If fso.FileExists(c) Then
-        exe = c
-        Exit For
+    If fso.FileExists(cands(i)) Then
+        If Not haveBest Then
+            bestTs = fso.GetFile(cands(i)).DateLastModified
+            exe = cands(i)
+            haveBest = True
+        ElseIf fso.GetFile(cands(i)).DateLastModified > bestTs Then
+            bestTs = fso.GetFile(cands(i)).DateLastModified
+            exe = cands(i)
+        End If
     End If
 Next
 
 If exe = "" Then
-    WScript.Echo "æ‰¾ä¸åˆ° å°Dæ™ºèƒ½åŠ©æ‰‹.exeï¼Œè¯·æŠŠå®ƒå’Œæœ¬å¯åŠ¨å™¨æ”¾åœ¨åŒä¸€ç›®å½•ã€‚"
+    WScript.Echo "ÕÒ²»µ½ Ğ¡DÖÇÄÜÖúÊÖ.exe£¬Çë°ÑËüºÍ±¾Æô¶¯Æ÷·ÅÔÚÍ¬Ò»Ä¿Â¼¡£"
     WScript.Quit 1
 End If
 
 sh.CurrentDirectory = fso.GetParentFolderName(exe)
-' ç¬¬äºŒä¸ªå‚æ•° 0 = éšè—çª—å£ï¼›ç¬¬ä¸‰ä¸ªå‚æ•° False = ä¸ç­‰å¾…
+' µÚ¶ş¸ö²ÎÊı 0 = Òş²Ø´°¿Ú£»µÚÈı¸ö²ÎÊı False = ²»µÈ´ı
 sh.Run """" & exe & """", 0, False
