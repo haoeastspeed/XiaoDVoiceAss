@@ -112,7 +112,9 @@ def _kill(pid: int) -> bool:
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                            stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=10)
+                           stderr=subprocess.DEVNULL, timeout=10,
+                           creationflags=getattr(subprocess,
+                                                "CREATE_NO_WINDOW", 0))
         else:
             os.kill(pid, 15)
     except Exception:

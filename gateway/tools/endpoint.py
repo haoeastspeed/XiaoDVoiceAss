@@ -34,6 +34,27 @@ import httpx
 
 from gateway.tools.types import ToolDef, ToolResult, empty_schema, sanitize_tool_name
 
+
+def _no_window_kwargs() -> dict:
+    """Windows 下启动子进程时隐藏控制台窗口的统一参数（双保险）。
+
+    CREATE_NO_WINDOW 阻止创建控制台；STARTUPINFO + SW_HIDE 兜底某些
+    Windows 版本对 CREATE_NO_WINDOW 处理不一致的情况。非 Windows 返回空。
+    """
+    if os.name != "nt":
+        return {}
+    import subprocess
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    si.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return {
+        "creationflags": (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                         | getattr(subprocess, "DETACHED_PROCESS", 0)
+                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+        "startupinfo": si,
+    }
+
+
 _INIT_TIMEOUT = 10.0
 _CALL_TIMEOUT = 30.0
 _FIRST_ID = 1
@@ -190,7 +211,7 @@ class StdioEndpoint(_BaseEndpoint):
         self._proc = await asyncio.create_subprocess_exec(
             exe, *args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            env=env)
+            env=env, **_no_window_kwargs())
         self._reader_task = asyncio.create_task(self._read_loop())
 
     async def _read_loop(self):

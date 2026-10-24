@@ -36,6 +36,40 @@ def _bootstrap_path() -> str:
 
 _BASE = _bootstrap_path()
 
+
+def _patch_subprocess_no_window() -> None:
+    """全局兜底：Windows 下让所有 subprocess 调用默认隐藏控制台窗口。
+
+    即使某个调用点忘了传 creationflags（比如第三方库内部启动的子进程），
+    也不会再弹黑色控制台窗口。双保险：CREATE_NO_WINDOW + STARTUPINFO SW_HIDE。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import subprocess
+        _orig_popen = subprocess.Popen
+        _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        _DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0)
+
+        class _Popen(_orig_popen):
+            def __init__(self, *a, **kw):
+                # 只在调用方没显式指定时兜底，不覆盖已有设置
+                if not kw.get("creationflags"):
+                    kw["creationflags"] = _CREATE_NO_WINDOW | _DETACHED
+                if not kw.get("startupinfo"):
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+                    si.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+                    kw["startupinfo"] = si
+                super().__init__(*a, **kw)
+
+        subprocess.Popen = _Popen
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_patch_subprocess_no_window()
+
 from app import app_config as acfg          # noqa: E402
 from app.api import log                     # noqa: E402
 from app import gateway_ctl                 # noqa: E402
