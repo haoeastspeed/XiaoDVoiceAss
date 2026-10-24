@@ -17,11 +17,11 @@
 
 Release 页面：<https://github.com/haoeastspeed/XiaoDVoiceAss/releases>
 
-| 资产 | 说明 |
-| --- | --- |
-| `小D智能助手-v1.0.0-单文件版.exe` | 69 MB，免安装单文件，拷贝即用 |
-| `小D智能助手-v1.0.0-极速版.zip` | onedir 版（约 300 MB），启动更快，推荐日常使用 |
-| `firmware-v1.0.0.zip` | ESP32 完整可刷镜像（merged 16MB + xiaozhi + assets）+ 烧录脚本 |
+| 资产 | 大小 | 用途 | 直链 |
+| --- | --- | --- | --- |
+| `XiaoDVoiceAss-v1.0.0-portable.exe` | 69 MB | 免安装单文件，拷贝即用 | [下载](https://github.com/haoeastspeed/XiaoDVoiceAss/releases/download/v1.0.0/XiaoDVoiceAss-v1.0.0-portable.exe) |
+| `XiaoDVoiceAss-v1.0.0-windows-x64.zip` | 70 MB | onedir 版，启动更快，推荐日常使用 | [下载](https://github.com/haoeastspeed/XiaoDVoiceAss/releases/download/v1.0.0/XiaoDVoiceAss-v1.0.0-windows-x64.zip) |
+| `firmware-v1.0.0.zip` | 10 MB | ESP32 完整可刷镜像 + 烧录脚本 | [下载](https://github.com/haoeastspeed/XiaoDVoiceAss/releases/download/v1.0.0/firmware-v1.0.0.zip) |
 
 ## 快速开始
 
